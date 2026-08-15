@@ -1,0 +1,8 @@
+# dsh-api-gateway bundle layer.
+#
+# `dsh plugin add dsh-api-gateway` applies this patch to the composed config.
+# Every option has a schema default — override a row key in your own profile
+# patch layer instead of editing this file.
+- insert:
+    - id: api-gateway
+      name: dsh-api-gateway

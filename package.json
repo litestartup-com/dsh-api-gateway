@@ -32,16 +32,22 @@
     "lib/index.js",
     "lib/client.js",
     "lib/types/**/*.d.ts",
+    "cordis.patch.yml",
     "README.md",
+    "README.zh.md",
     "LICENSE",
     "openapi.yaml"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
+    "prepare": "tsc -p tsconfig.json",
     "smoke": "node scripts/smoke.mjs"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": []
