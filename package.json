@@ -8,11 +8,12 @@
   "types": "lib/types/index.d.ts",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR_NAME/dsh-api-gateway.git"
+    "url": "git+https://github.com/litestartup-com/dsh-api-gateway.git"
   },
   "bugs": {
-    "url": "https://github.com/YOUR_NAME/dsh-api-gateway/issues"
+    "url": "https://github.com/litestartup-com/dsh-api-gateway/issues"
   },
+  "homepage": "https://github.com/litestartup-com/dsh-api-gateway#readme",
   "author": "dsh-api-gateway contributors",
   "engines": {
     "node": ">=20"

@@ -221,7 +221,7 @@ pnpm build        # tsc
 pnpm smoke        # 对运行中的网关跑端到端冒烟
 ```
 
-冒烟 env：`DSH_AGW_BASE`（默认 `http://127.0.0.1:3080/api-gw/v1`）、`DSH_AGW_KEY`（缺省则领一把）、`DSH_AGW_PROMPT`。CI（`.github/workflows/ci.yml`）跑构建 + 语法检查，可用仓库 vars 开启可选冒烟。发布前把 `package.json` 中 `repository`/`bugs` 的 `YOUR_NAME` 占位符换成你的仓库。
+冒烟 env：`DSH_AGW_BASE`（默认 `http://127.0.0.1:3080/api-gw/v1`）、`DSH_AGW_KEY`（缺省则领一把）、`DSH_AGW_PROMPT`。CI（`.github/workflows/ci.yml`）跑构建 + 语法检查，可用仓库 vars 开启可选冒烟。
 
 ## 路线图
 

@@ -221,7 +221,7 @@ pnpm build        # tsc
 pnpm smoke        # end-to-end smoke against a running gateway
 ```
 
-Smoke env: `DSH_AGW_BASE` (default `http://127.0.0.1:3080/api-gw/v1`), `DSH_AGW_KEY` (optional — claims a key if absent), `DSH_AGW_PROMPT`. CI (`.github/workflows/ci.yml`) runs build + syntax checks, with an optional smoke job activated by repository variables. Before publishing, replace the `YOUR_NAME` placeholders in `package.json` (`repository`/`bugs`) with your repo.
+Smoke env: `DSH_AGW_BASE` (default `http://127.0.0.1:3080/api-gw/v1`), `DSH_AGW_KEY` (optional — claims a key if absent), `DSH_AGW_PROMPT`. CI (`.github/workflows/ci.yml`) runs build + syntax checks, with an optional smoke job activated by repository variables.
 
 ## Roadmap
 
