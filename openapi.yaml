@@ -1,0 +1,208 @@
+openapi: 3.0.3
+info:
+  title: dsh-api-gateway
+  description: REST + SSE gateway for chatting with DeepSeek Harness agents.
+  version: 0.1.0
+servers:
+  - url: http://127.0.0.1:3080
+paths:
+  /api-gw/v1/health:
+    get:
+      summary: Gateway status (reachable even while disabled)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok, disabled] }
+                  enabled: { type: boolean }
+                  sessions: { type: integer }
+                  apiKeySet: { type: boolean }
+  /api-gw/v1/key:
+    post:
+      summary: One-time API key provisioning (first call only)
+      responses:
+        '200':
+          description: key issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey: { type: string }
+  /api-gw/v1/sessions:
+    post:
+      summary: Create a new agent session
+      parameters:
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider: { type: string }
+                model: { type: string }
+                maxTokens: { type: integer }
+                cwd: { type: string }
+      responses:
+        '201':
+          description: session created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId: { type: string }
+                  status: { type: string }
+                  provider: { type: string }
+                  model: { type: string }
+                  cwd: { type: string }
+  /api-gw/v1/sessions/{id}/messages:
+    post:
+      summary: Deliver one user message to the session
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  description: text string or content-block array
+                  oneOf:
+                    - { type: string }
+                    - { type: array, items: { type: object } }
+      responses:
+        '202':
+          description: accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  sessionId: { type: string }
+                  messageId: { type: string }
+                  status: { type: string }
+  /api-gw/v1/sessions/{id}/stream:
+    get:
+      summary: Server-Sent Events stream of session activity; closes at turn_end
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: 'data: JSON lines with kind: hello|user|chunk|message|tool_call|tool_result|turn_start|turn_end'
+  /api-gw/v1/sessions/discover:
+    get:
+      summary: List all sessions (id/title/cwd/live/persisted) — no content
+      parameters:
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: session list
+  /api-gw/v1/sessions/{id}/adopt:
+    post:
+      summary: Adopt an existing session (live shared-drive or cold resume); returns full history
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: adopted; mode is live (GUI session still open) or resumed (cold-loaded)
+  /api-gw/v1/sessions/{id}/history:
+    get:
+      summary: Full history of ANY session (owned, GUI, or cold) — read-only
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: history
+  /api-gw/v1/sessions/{id}/cancel:
+    post:
+      summary: Cancel the active turn
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: cancelled
+  /api-gw/v1/admin/enable:
+    post:
+      summary: Runtime master switch (admin key required)
+      parameters:
+        - in: header
+          name: X-Admin-Key
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: new state
+  /api-gw/v1/admin/rotate-key:
+    post:
+      summary: Rotate the provisioned API key (admin key required)
+      parameters:
+        - in: header
+          name: X-Admin-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: new key

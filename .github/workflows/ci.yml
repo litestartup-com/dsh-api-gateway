@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm build
+      # Syntax sanity for the client bundle (it ships as .tsx source and is
+      # bundled by the consuming deployment, but must at least parse).
+      - run: node --experimental-strip-types --check src/index.ts
+      - name: Smoke (optional — only when a gateway is reachable)
+        if: ${{ vars.DSH_AGW_BASE != '' }}
+        env:
+          DSH_AGW_BASE: ${{ vars.DSH_AGW_BASE }}
+          DSH_AGW_KEY: ${{ secrets.DSH_AGW_KEY }}
+        run: pnpm smoke
