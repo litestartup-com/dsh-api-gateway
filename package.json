@@ -42,7 +42,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
-    "prepare": "tsc -p tsconfig.json",
+    "prepack": "tsc -p tsconfig.json",
     "smoke": "node scripts/smoke.mjs"
   },
   "dsh": {

@@ -26,14 +26,14 @@ dsh plugin --profile web add dsh-api-gateway
 # npm (prebuilt — no build approval needed)
 dsh plugin --profile web add dsh-api-gateway
 
-# straight from GitHub (sources)
+# straight from GitHub (prebuilt lib/ committed)
 dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 
 # from a packed tarball
 dsh plugin --profile web add ./dsh-api-gateway-0.1.0.tgz
 ```
 
-> Git installs fetch sources and run this package's `prepare` (build) script. pnpm ≥ 10 refuses that until you allow it: copy the exact package key pnpm prints into the profile's `pnpm-workspace.yaml` under `allowBuilds` and re-run the add. That allowance means "execute this package's code at install time" — only allow sources you trust, and pin a commit when in doubt.
+> The built `lib/` is committed, so GitHub installs need no build approval. Build scripts run only when packing or publishing (`prepack`).
 
 Uninstall: `dsh plugin --profile web remove dsh-api-gateway`.
 

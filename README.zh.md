@@ -26,14 +26,14 @@ dsh plugin --profile web add dsh-api-gateway
 # npm（预构建产物，无需构建授权）
 dsh plugin --profile web add dsh-api-gateway
 
-# 直接从 GitHub 安装（源码）
+# 直接从 GitHub 安装（已含构建产物）
 dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 
 # 从 tarball 安装
 dsh plugin --profile web add ./dsh-api-gateway-0.1.0.tgz
 ```
 
-> Git 安装拉取的是**源码**，会执行本包的 `prepare`（构建）脚本；pnpm ≥ 10 默认拒绝，需把 pnpm 打印的包名键复制进 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds` 后重试。该授权意味着"安装时执行此包代码"——只放行你信任的源，拿不准就固定 commit。
+> 已提交构建产物 `lib/`，从 GitHub 安装无需构建授权；构建脚本（`prepack`）只在打包/发布时执行。
 
 卸载：`dsh plugin --profile web remove dsh-api-gateway`。
 
