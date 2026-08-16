@@ -20,6 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ServerResponse } from 'node:http'
 import type { IncomingMessage } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
@@ -60,10 +61,10 @@ export const Config = z.object({
   enabled: z.boolean().default(true),
   apiKeys: z.array(z.string()).default([]),
   allowKeyProvision: z.boolean().default(true),
-  adminKey: z.string().optional(),
+  adminKey: z.string(),
   maxSessions: z.natural().default(20),
   workspaceMode: z.union([z.const('auto'), z.const('ungrouped')]).default('auto'),
-  defaultWorkspacePath: z.string().optional(),
+  defaultWorkspacePath: z.string(),
   allowDiscover: z.boolean().default(true),
   allowAdopt: z.boolean().default(true),
   corsOrigin: z.union([z.string(), z.array(z.string())]).default('*'),
@@ -98,11 +99,33 @@ interface AgentLike {
 
 type GatewayEvent = { kind: string; seq: number; [key: string]: unknown }
 
+/**
+ * Structural faces for host services this plugin consumes but whose rich
+ * types are not exported on the public `Context` surface. `inject` still
+ * declares the hard dependencies for the Cordis runtime; these local types
+ * only make the compiler check our usage instead of `any`.
+ */
+interface AgentLoopLike {
+  readonly config: { agents?: Array<{ provider?: string; model?: string }> }
+  createAgent(ctx: Context, options: {
+    sessionId: string
+    agentOptions?: unknown
+    meta?: { cwd?: string }
+    setup?: (agentCtx: Context) => Promise<void> | void
+  }): Promise<{ agent: AgentLike; dispose: () => Promise<void> | void }>
+  resume(ctx: Context, options: { resumeSessionId: string }): Promise<{ agent: AgentLike; dispose?: () => Promise<void> | void }>
+}
+interface TimerLike {
+  timeout(callback: () => void, delay: number): () => void
+  interval(callback: () => void, delay: number): () => void
+}
+
 export default {
   inject: ['webServer', 'agentLoop', 'timer'],
   apply(ctx: Context, config: Config) {
     const webServer = ctx.webServer
-    const agentLoop = ctx.agentLoop
+    const agentLoop = ctx.get('agentLoop') as AgentLoopLike
+    const timer = ctx.get('timer') as TimerLike | undefined
     const sessionQuery = ctx.get('sessionQuery') as { readSession?: (id: string) => Promise<unknown>; listSessions?: () => Promise<unknown[]> } | undefined
     const agentsService = ctx.get('agents') as { get?: (id: string) => unknown } | undefined
 
@@ -162,12 +185,12 @@ export default {
       const chunks: Buffer[] = []
       let size = 0
       let settled = false
-      const stopTimer = ctx.timeout(() => {
+      const stopTimer = timer !== undefined ? timer.timeout(() => {
         if (settled) return
         settled = true
         reject(new Error('body read timeout'))
         try { req.destroy() } catch { /* noop */ }
-      }, config.bodyTimeoutMs)
+      }, config.bodyTimeoutMs) : (() => {})
       const finish = (done: () => void) => {
         if (settled) return
         settled = true
@@ -353,9 +376,9 @@ export default {
     }
 
     const ensurePump = (entry: SessionEntry) => {
-      if (entry.pollerDispose !== null) return
+      if (entry.pollerDispose !== null || timer === undefined) return
       entry.lastBeat = Date.now()
-      entry.pollerDispose = ctx.interval(() => pollEntry(entry), 400)
+      entry.pollerDispose = timer.interval(() => pollEntry(entry), 400)
     }
 
     const releasePump = (entry: SessionEntry) => {
@@ -366,7 +389,7 @@ export default {
 
     // Path A: live session/event listener; the pump (Path B) guarantees
     // delivery even when the scoped dispatch does not reach this context.
-    const onSessionEvent = (session: { id: string }, event: unknown) => {
+    const onSessionEvent = (session: Session, event: SessionEvent) => {
       const entry = apiSessions.get(session.id)
       if (entry === undefined) return
       const payload = eventPayload(event)
