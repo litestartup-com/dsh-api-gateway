@@ -40,9 +40,9 @@
     "openapi.yaml"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/wrap-client.mjs",
     "watch": "tsc -p tsconfig.json --watch",
-    "prepack": "tsc -p tsconfig.json",
+    "prepack": "tsc -p tsconfig.json && node scripts/wrap-client.mjs",
     "smoke": "node scripts/smoke.mjs"
   },
   "dsh": {
