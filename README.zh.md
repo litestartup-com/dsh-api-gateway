@@ -42,7 +42,7 @@ dsh plugin --profile web add ./dsh-api-gateway-0.1.0.tgz
 插件本质是普通 Cordis 行，也可手工编排。它发布跨会话共享的 HTTP 面，应挂**宿主组合**（或 profile 的补丁层）——绝不能放进 agent preset：
 
 ```yaml
-- id: api-gateway
+- id: dsh-api-gw
   name: dsh-api-gateway
   config:
     prefix: /api-gw/v1          # 路由前缀

@@ -4,5 +4,5 @@
 # Every option has a schema default — override a row key in your own profile
 # patch layer instead of editing this file.
 - insert:
-    - id: api-gateway
+    - id: dsh-api-gw
       name: dsh-api-gateway

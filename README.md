@@ -42,7 +42,7 @@ Uninstall: `dsh plugin --profile web remove dsh-api-gateway`.
 The plugin is an ordinary Cordis row; you can also compose it by hand. It publishes a cross-session HTTP surface, so it belongs in the **host composition** (or the profile's patch layer) — never inside an agent preset:
 
 ```yaml
-- id: api-gateway
+- id: dsh-api-gw
   name: dsh-api-gateway
   config:
     prefix: /api-gw/v1          # route prefix

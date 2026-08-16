@@ -1,7 +1,7 @@
 # 示例：把 dsh-api-gateway 加进你的宿主组合（host composition）。
 #
 # 你的部署已有完整的宿主组合文件（cordis.yml）——不要整体替换，只需把
-# `api-gateway` 这一行加进去（行格式与现有行保持一致），然后重启。
+# `dsh-api-gw` 这一行加进去（行格式与现有行保持一致），然后重启。
 #
 # 平面归属：该插件发布跨会话共享的 HTTP 服务，必须挂在宿主组合，
 # 不能放进任何 agent preset（预设挂载会以“发布进程级服务”拒绝）。
@@ -16,7 +16,7 @@
 # ……你的部署其余宿主行（agent-loop、sessions、sandbox、llm 路由等）……
 
 # API Gateway 行 —— 把它复制进你的组合：
-- id: api-gateway
+- id: dsh-api-gw
   name: dsh-api-gateway
   config:
     prefix: /api-gw/v1          # 网关路由前缀（注册在 webServer 载体上）
