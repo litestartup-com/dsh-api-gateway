@@ -122,6 +122,7 @@ interface TimerLike {
 
 export default {
   inject: ['webServer', 'agentLoop', 'timer'],
+  Config,
   apply(ctx: Context, config: Config) {
     const webServer = ctx.webServer
     const agentLoop = ctx.get('agentLoop') as AgentLoopLike

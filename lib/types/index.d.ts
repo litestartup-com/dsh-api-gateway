@@ -81,6 +81,37 @@ export declare const Config: z<Schemastery.ObjectS<{
 }>>;
 declare const _default: {
     inject: string[];
+    Config: z<Schemastery.ObjectS<{
+        prefix: z<string, string>;
+        enabled: z<boolean, boolean>;
+        apiKeys: z<string[], string[]>;
+        allowKeyProvision: z<boolean, boolean>;
+        adminKey: z<string, string>;
+        maxSessions: z<number, number>;
+        workspaceMode: z<"auto" | "ungrouped", "auto" | "ungrouped">;
+        defaultWorkspacePath: z<string, string>;
+        allowDiscover: z<boolean, boolean>;
+        allowAdopt: z<boolean, boolean>;
+        corsOrigin: z<string | string[], string | string[]>;
+        exposeErrors: z<boolean, boolean>;
+        sseHeartbeatMs: z<number, number>;
+        bodyTimeoutMs: z<number, number>;
+    }>, Schemastery.ObjectT<{
+        prefix: z<string, string>;
+        enabled: z<boolean, boolean>;
+        apiKeys: z<string[], string[]>;
+        allowKeyProvision: z<boolean, boolean>;
+        adminKey: z<string, string>;
+        maxSessions: z<number, number>;
+        workspaceMode: z<"auto" | "ungrouped", "auto" | "ungrouped">;
+        defaultWorkspacePath: z<string, string>;
+        allowDiscover: z<boolean, boolean>;
+        allowAdopt: z<boolean, boolean>;
+        corsOrigin: z<string | string[], string | string[]>;
+        exposeErrors: z<boolean, boolean>;
+        sseHeartbeatMs: z<number, number>;
+        bodyTimeoutMs: z<number, number>;
+    }>>;
     apply(ctx: Context, config: Config): void;
 };
 export default _default;
