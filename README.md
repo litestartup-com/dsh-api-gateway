@@ -5,7 +5,7 @@ English | [中文](README.zh.md)
 A plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) that turns a running Harness into an HTTP API: any third-party client — curl, Python, a browser, an IM bridge — can create agent sessions, stream replies token-by-token over SSE, and continue conversations started in the Web UI, all behind API-key authentication. API sessions drive the same agent machine the GUI drives (inbox + session log), so both worlds stay in sync.
 
 ```sh
-dsh plugin --profile web add dsh-api-gateway
+dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 ```
 
 ## Features
@@ -23,10 +23,7 @@ dsh plugin --profile web add dsh-api-gateway
 ### Recommended: `dsh plugin add`
 
 ```sh
-# npm (prebuilt — no build approval needed)
-dsh plugin --profile web add dsh-api-gateway
-
-# straight from GitHub (prebuilt lib/ committed)
+# from GitHub (prebuilt lib/ committed — no build approval needed)
 dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 
 # from a packed tarball

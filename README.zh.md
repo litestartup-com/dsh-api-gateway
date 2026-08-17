@@ -5,7 +5,7 @@
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 API Gateway 插件：把正在运行的 Harness 变成 HTTP API——任何第三方客户端（curl、Python、浏览器、IM 桥）都能创建 Agent 会话、经 SSE 逐 token 流式接收回复、并**继续 UI 里聊到一半的会话**，全程 API 密钥鉴权。API 会话与 GUI 会话驱动同一套 Agent 机器（inbox + 会话日志），两边天然同步。
 
 ```sh
-dsh plugin --profile web add dsh-api-gateway
+dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 ```
 
 ## 特性
@@ -23,10 +23,7 @@ dsh plugin --profile web add dsh-api-gateway
 ### 推荐：`dsh plugin add`
 
 ```sh
-# npm（预构建产物，无需构建授权）
-dsh plugin --profile web add dsh-api-gateway
-
-# 直接从 GitHub 安装（已含构建产物）
+# 从 GitHub 安装（已含构建产物，无需构建授权）
 dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 
 # 从 tarball 安装
