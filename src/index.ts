@@ -187,12 +187,14 @@ export default {
     }
 
     const readBody = (req: IncomingMessage) => new Promise<Record<string, unknown>>((resolve, reject) => {
+      console.error('[agw-debug] readBody START')
       const chunks: Buffer[] = []
       let size = 0
       let settled = false
       const stopTimer = timer !== undefined ? timer.timeout(() => {
         if (settled) return
         settled = true
+        console.error('[agw-debug] readBody TIMEOUT fired')
         reject(new Error('body read timeout'))
         try { req.destroy() } catch { /* noop */ }
       }, cfg.bodyTimeoutMs) : (() => {})
@@ -208,6 +210,7 @@ export default {
         chunks.push(chunk)
       })
       req.on('end', () => {
+        console.error('[agw-debug] readBody END bytes=' + size)
         const buf = Buffer.concat(chunks)
         // Honor the request charset (RFC 9110): default UTF-8, but accept
         // e.g. gbk/gb2312 from clients that still send ANSI-encoded bodies
@@ -514,21 +517,29 @@ export default {
 
       // Proper ownership: the plugin fiber owns every created agent, so a
       // plugin stop or update tears each session down cleanly.
+      console.error('[agw-debug] createSession: createAgent START')
       const handle = await agentLoop.createAgent(ctx, {
         sessionId,
         agentOptions: options,
         ...(cwd === undefined ? {} : { meta: { cwd } }),
         // Mount the deployment's default agent preset so API sessions get the
         // same tools and skills as GUI sessions. Non-fatal by design.
+        //
+        // Fire-and-forget: mounting must NOT block session creation. rc.7's
+        // default preset is far larger than rc.6's, and `await`ing the mount
+        // here made POST /sessions hang with no timeout whenever the mount was
+        // slow or wedged. The mount still runs in the background; a failure is
+        // logged, never thrown into the session.
         setup: async (agentCtx: Context) => {
           const presets = agentCtx.get('agentPresets') as { mount?: (c: Context, id?: string) => Promise<unknown> } | undefined
           if (presets?.mount !== undefined) {
-            try { await presets.mount(agentCtx) } catch (error) {
+            presets.mount(agentCtx).catch((error) => {
               ctx.logger?.warn?.(`[api-gateway] preset mount failed for ${sessionId}: ${String(error)}`)
-            }
+            })
           }
         },
       })
+      console.error('[agw-debug] createSession: createAgent DONE')
 
       const agent = handle.agent as AgentLike
 
