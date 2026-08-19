@@ -445,6 +445,25 @@ export default {
     }
 
     /**
+     * Bound an async operation: resolve to `fallback` when it is slow or
+     * wedged, so a hung service (storage, filesystem) can never block session
+     * creation. The losing operation still runs to completion in the
+     * background — its timer is cleared once the race settles.
+     */
+    const bounded = async <T>(op: Promise<T>, fallback: T, ms: number): Promise<T> => {
+      if (timer === undefined) return op
+      let stop: (() => void) | null = null
+      try {
+        return await Promise.race([
+          op,
+          new Promise<T>((resolve) => { stop = timer.timeout(() => resolve(fallback), ms) }),
+        ])
+      } finally {
+        try { stop?.() } catch { /* noop */ }
+      }
+    }
+
+    /**
      * Resolve the workspace a new session should join. Explicit request wins;
      * otherwise `auto` mode resolves-or-creates the effective cwd. The session
      * header cwd is later forced to the workspace canonical path so the durable
@@ -453,9 +472,19 @@ export default {
     const resolveWorkspace = async (ws: unknown, fallbackCwd: string | undefined): Promise<WorkspaceHandle | null> => {
       const registry = ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
       if (registry === undefined) return null
+      const resolveOrCreate = async (path: string, title?: string): Promise<WorkspaceHandle | null> => {
+        console.error('[agw-debug] resolveWorkspace: resolveByPath START path=' + path)
+        const existing = await bounded(registry.resolveByPath(path), undefined, 5_000)
+        console.error('[agw-debug] resolveWorkspace: resolveByPath DONE existing=' + String(existing !== undefined))
+        if (existing !== undefined) return existing
+        console.error('[agw-debug] resolveWorkspace: create START')
+        const created = await bounded(registry.create(path, title), undefined, 5_000)
+        console.error('[agw-debug] resolveWorkspace: create DONE created=' + String(created !== undefined))
+        return created ?? null
+      }
       if (ws !== undefined && ws !== null) {
         if (typeof ws === 'string' && ws !== '') {
-          return (await registry.resolveByPath(ws)) ?? (await registry.create(ws))
+          return resolveOrCreate(ws)
         }
         if (typeof ws === 'object') {
           const w = ws as { id?: unknown; path?: unknown; title?: unknown }
@@ -470,13 +499,13 @@ export default {
           }
           if (typeof w.path === 'string' && w.path !== '') {
             const title = typeof w.title === 'string' && w.title !== '' ? w.title : undefined
-            return (await registry.resolveByPath(w.path)) ?? (await registry.create(w.path, title))
+            return resolveOrCreate(w.path, title)
           }
         }
         throw new Error('workspace must be a path string, { path, title? }, or { id }')
       }
       if (fallbackCwd === undefined) return null
-      return (await registry.resolveByPath(fallbackCwd)) ?? (await registry.create(fallbackCwd))
+      return resolveOrCreate(fallbackCwd)
     }
 
     const makeEntry = (agent: AgentLike, owned: boolean, dispose: (() => Promise<void> | void) | null, mode: SessionEntry['mode'], workspace: SessionEntry['workspace']): SessionEntry => ({
@@ -809,7 +838,9 @@ export default {
         if (content === null) return sendJson(res, 400, { error: 'content must be a non-empty string or a non-empty array of content blocks' })
         const message = createUserMessage({ content: content as never, source: { kind: 'user' } })
         try {
+          console.error('[agw-debug] messages: followup START session=' + seg[1])
           entry.agent.followup(message)
+          console.error('[agw-debug] messages: followup DONE')
         } catch (error) {
           return sendJson(res, 500, { error: 'delivery_failed', detail: errorDetail(error) })
         }
