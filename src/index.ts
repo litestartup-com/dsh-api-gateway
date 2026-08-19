@@ -451,15 +451,27 @@ export default {
      * background — its timer is cleared once the race settles.
      */
     const bounded = async <T>(op: Promise<T>, fallback: T, ms: number): Promise<T> => {
-      if (timer === undefined) return op
-      let stop: () => void = () => {}
+      let handle: ReturnType<typeof setTimeout> | null = null
       try {
         return await Promise.race([
           op,
-          new Promise<T>((resolve) => { stop = timer.timeout(() => resolve(fallback), ms) }),
+          new Promise<T>((resolve) => { handle = setTimeout(() => resolve(fallback), ms) }),
         ])
       } finally {
-        try { stop() } catch { /* noop */ }
+        if (handle !== null) clearTimeout(handle)
+      }
+    }
+
+    /** Like `bounded`, but a slow operation rejects instead of resolving to a fallback. */
+    const boundedOrThrow = async <T>(op: Promise<T>, ms: number, label: string): Promise<T> => {
+      let handle: ReturnType<typeof setTimeout> | null = null
+      try {
+        return await Promise.race([
+          op,
+          new Promise<never>((_, reject) => { handle = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms) }),
+        ])
+      } finally {
+        if (handle !== null) clearTimeout(handle)
       }
     }
 
@@ -547,7 +559,7 @@ export default {
       // Proper ownership: the plugin fiber owns every created agent, so a
       // plugin stop or update tears each session down cleanly.
       console.error('[agw-debug] createSession: createAgent START')
-      const handle = await agentLoop.createAgent(ctx, {
+      const handle = await boundedOrThrow(agentLoop.createAgent(ctx, {
         sessionId,
         agentOptions: options,
         ...(cwd === undefined ? {} : { meta: { cwd } }),
@@ -567,7 +579,7 @@ export default {
             })
           }
         },
-      })
+      }), 20_000, 'agent creation')
       console.error('[agw-debug] createSession: createAgent DONE')
 
       const agent = handle.agent as AgentLike
