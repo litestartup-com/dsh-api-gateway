@@ -452,14 +452,14 @@ export default {
      */
     const bounded = async <T>(op: Promise<T>, fallback: T, ms: number): Promise<T> => {
       if (timer === undefined) return op
-      let stop: (() => void) | null = null
+      let stop: () => void = () => {}
       try {
         return await Promise.race([
           op,
           new Promise<T>((resolve) => { stop = timer.timeout(() => resolve(fallback), ms) }),
         ])
       } finally {
-        try { stop?.() } catch { /* noop */ }
+        try { stop() } catch { /* noop */ }
       }
     }
 
