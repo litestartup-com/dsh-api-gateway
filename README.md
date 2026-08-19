@@ -86,6 +86,8 @@ Invoke-RestMethod -Method Post "$BASE/sessions/$SID/messages" `
 
 > PowerShell 5.1 sends ANSI/GBK by default → garbled Chinese. Use the UTF-8 byte form above (or declare `charset=utf-8`); PowerShell 7 is UTF-8 by default. The server honors the request `Content-Type` charset (default UTF-8, GBK-tolerant). No `jq`? `brew install jq`, or use the Python/PowerShell examples.
 
+> ⚠️ **In Windows PowerShell, do not inline JSON with `curl.exe -d '{"...":"..."}'`**: PowerShell 5.1 strips the inner double quotes when passing arguments to native programs (a 58-byte JSON measured only 50 bytes on the wire), so the server receives invalid JSON and answers 400 — which `curl -s` hides, making the request look stuck. Either write the body to a file and use `--data-binary "@file"`, or use the Invoke-RestMethod form above (.NET argument passing is unaffected).
+
 Python (httpx):
 
 ```python

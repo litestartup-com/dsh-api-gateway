@@ -86,6 +86,8 @@ Invoke-RestMethod -Method Post "$BASE/sessions/$SID/messages" `
 
 > PowerShell 5.1 默认 ANSI/GBK 发中文会乱码：用上面的 UTF-8 字节写法（或声明 `charset=utf-8`）；PowerShell 7 默认 UTF-8 无此问题。服务端按 Content-Type 的 charset 解码（默认 UTF-8，兼容 GBK）。没有 `jq`？`brew install jq`，或用 Python/PowerShell 版。
 
+> ⚠️ **Windows PowerShell 里不要用 `curl.exe -d '{"...":"..."}'` 内联 JSON**：PowerShell 5.1 向原生程序传参时会把内层双引号剥掉（实测 58 字节的 JSON 只发出 50 字节），服务端收到非法 JSON 返回 400，加上 `curl -s` 又看不到报错，看起来就像「请求卡死」。要么把 body 写文件后用 `--data-binary "@file"`，要么直接用上面的 Invoke-RestMethod（.NET 传参不受影响）。
+
 Python（httpx）：
 
 ```python
