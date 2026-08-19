@@ -22,6 +22,7 @@ import type { IncomingMessage } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 
@@ -59,9 +60,9 @@ export interface Config {
 export const Config = z.object({
   prefix: z.string().default('/api-gw/v1'),
   enabled: z.boolean().default(true),
-  apiKeys: z.array(z.string()).default([]),
+  apiKeys: z.array(z.string().role('secret')).default([]),
   allowKeyProvision: z.boolean().default(true),
-  adminKey: z.string(),
+  adminKey: z.string().role('secret'),
   maxSessions: z.natural().default(20),
   workspaceMode: z.union([z.const('auto'), z.const('ungrouped')]).default('auto'),
   defaultWorkspacePath: z.string(),
@@ -130,7 +131,10 @@ export default {
     const sessionQuery = ctx.get('sessionQuery') as { readSession?: (id: string) => Promise<unknown>; listSessions?: () => Promise<unknown[]> } | undefined
     const agentsService = ctx.get('agents') as { get?: (id: string) => unknown } | undefined
 
-    let enabled = config.enabled
+    // Mutable runtime config: seeded from the composition row, then re-applied
+    // live from the settings namespace (rc.7 settings integration) below.
+    let cfg = config
+    let settingsScope: { update: (patch: object) => Promise<void> } | null = null
     let apiKey: string | null = null
     const apiSessions = new Map<string, SessionEntry>()
 
@@ -160,7 +164,7 @@ export default {
 
     const errorDetail = (error: unknown) => {
       const message = String((error as Error)?.message ?? error)
-      return config.exposeErrors ? message : 'internal error (set exposeErrors: true for details)'
+      return cfg.exposeErrors ? message : 'internal error (set exposeErrors: true for details)'
     }
 
     /** Emit a gateway event on the Cordis bus for other host plugins. Never throws into the gateway. */
@@ -169,7 +173,7 @@ export default {
     }
 
     const setCors = (res: ServerResponse) => {
-      const origins = Array.isArray(config.corsOrigin) ? config.corsOrigin : [config.corsOrigin]
+      const origins = Array.isArray(cfg.corsOrigin) ? cfg.corsOrigin : [cfg.corsOrigin]
       res.setHeader('Access-Control-Allow-Origin', origins.join(', ') || '*')
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
       res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, x-api-key, x-admin-key')
@@ -191,7 +195,7 @@ export default {
         settled = true
         reject(new Error('body read timeout'))
         try { req.destroy() } catch { /* noop */ }
-      }, config.bodyTimeoutMs) : (() => {})
+      }, cfg.bodyTimeoutMs) : (() => {})
       const finish = (done: () => void) => {
         if (settled) return
         settled = true
@@ -232,7 +236,7 @@ export default {
     const keyAccepted = (candidate: string | null) => {
       if (candidate === null || candidate === '') return false
       if (apiKey !== null && safeEqual(candidate, apiKey)) return true
-      return config.apiKeys.some((key) => safeEqual(candidate, key))
+      return cfg.apiKeys.some((key) => safeEqual(candidate, key))
     }
 
     const authorized = (req: IncomingMessage) => {
@@ -241,14 +245,14 @@ export default {
     }
 
     const isAdmin = (req: IncomingMessage) => {
-      if (config.adminKey === undefined || config.adminKey === '') return false
+      if (cfg.adminKey === undefined || cfg.adminKey === '') return false
       const supplied = req.headers['x-admin-key']
-      return typeof supplied === 'string' && safeEqual(supplied, config.adminKey)
+      return typeof supplied === 'string' && safeEqual(supplied, cfg.adminKey)
     }
 
     const requireAuth = (req: IncomingMessage, res: ServerResponse) => {
       if (authorized(req)) return true
-      sendJson(res, 401, { error: 'unauthorized', hint: `Provide X-API-Key. POST ${config.prefix}/key provisions a key (first call only).` })
+      sendJson(res, 401, { error: 'unauthorized', hint: `Provide X-API-Key. POST ${cfg.prefix}/key provisions a key (first call only).` })
       return false
     }
 
@@ -370,7 +374,7 @@ export default {
         if (payload !== null) deliver(entry, payload)
       }
       entry.pollFrom = log.length
-      if (config.sseHeartbeatMs > 0 && entry.subscribers.size > 0 && Date.now() - entry.lastBeat >= config.sseHeartbeatMs) {
+      if (cfg.sseHeartbeatMs > 0 && entry.subscribers.size > 0 && Date.now() - entry.lastBeat >= cfg.sseHeartbeatMs) {
         writeToSubscribers(entry, ': ping\n\n')
         entry.lastBeat = Date.now()
       }
@@ -487,7 +491,7 @@ export default {
     })
 
     const createSession = async (body: Record<string, unknown>): Promise<SessionEntry> => {
-      if (apiSessions.size >= config.maxSessions) throw new Error(`session cap reached (${config.maxSessions})`)
+      if (apiSessions.size >= cfg.maxSessions) throw new Error(`session cap reached (${cfg.maxSessions})`)
       const options: { provider?: string; model?: string; maxTokens?: number } = {}
       if (typeof body.provider === 'string' && body.provider !== '') options.provider = body.provider
       if (typeof body.model === 'string' && body.model !== '') options.model = body.model
@@ -500,9 +504,9 @@ export default {
         }
       }
       if (!options.provider || !options.model) throw new Error('no provider/model: supply both in the request body')
-      const effectiveCwd = typeof body.cwd === 'string' && body.cwd !== '' ? body.cwd : (config.defaultWorkspacePath ?? resolveDefaultCwd())
+      const effectiveCwd = typeof body.cwd === 'string' && body.cwd !== '' ? body.cwd : (cfg.defaultWorkspacePath ?? resolveDefaultCwd())
       let workspace: WorkspaceHandle | null = null
-      if (body.workspace !== undefined || config.workspaceMode !== 'ungrouped') {
+      if (body.workspace !== undefined || cfg.workspaceMode !== 'ungrouped') {
         workspace = await resolveWorkspace(body.workspace, effectiveCwd)
       }
       const cwd = workspace !== null ? workspace.path : effectiveCwd
@@ -580,7 +584,7 @@ export default {
       if (existing !== undefined) {
         return { entry: existing, mode: existing.mode, snapshot: await readSessionSnapshot(sessionId) }
       }
-      if (apiSessions.size >= config.maxSessions) throw new Error(`session cap reached (${config.maxSessions})`)
+      if (apiSessions.size >= cfg.maxSessions) throw new Error(`session cap reached (${cfg.maxSessions})`)
 
       let liveAgent: unknown
       try { liveAgent = agentsService?.get?.(sessionId) } catch { liveAgent = undefined }
@@ -616,7 +620,7 @@ export default {
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
       const pathname = String(req.url ?? '').split('?')[0]
       const parts = pathname.split('/').filter((p) => p !== '')
-      const prefixParts = config.prefix.split('/').filter((p) => p !== '')
+      const prefixParts = cfg.prefix.split('/').filter((p) => p !== '')
       if (parts.length < prefixParts.length || parts.slice(0, prefixParts.length).join('/') !== prefixParts.join('/')) {
         return sendJson(res, 404, { error: 'not_found', service: 'api-gateway' })
       }
@@ -624,23 +628,23 @@ export default {
 
       // health stays reachable while disabled, for monitoring
       if (seg.length === 1 && seg[0] === 'health' && req.method === 'GET') {
-        return sendJson(res, 200, { status: enabled ? 'ok' : 'disabled', enabled, sessions: apiSessions.size, apiKeySet: apiKey !== null })
+        return sendJson(res, 200, { status: cfg.enabled ? 'ok' : 'disabled', enabled: cfg.enabled, sessions: apiSessions.size, apiKeySet: apiKey !== null })
       }
-      if (!enabled) return sendJson(res, 503, { error: 'service_disabled' })
+      if (!cfg.enabled) return sendJson(res, 503, { error: 'service_disabled' })
 
       if (seg.length === 0 && req.method === 'GET') {
         return sendJson(res, 200, {
           service: 'api-gateway', version: '0.1.0',
           endpoints: [
-            { method: 'GET', path: config.prefix + '/health', auth: false },
-            { method: 'POST', path: config.prefix + '/key', auth: 'first call only' },
-            { method: 'POST', path: config.prefix + '/sessions', auth: true },
-            { method: 'GET', path: config.prefix + '/sessions/discover', auth: true },
-            { method: 'POST', path: config.prefix + '/sessions/:id/adopt', auth: true },
-            { method: 'POST', path: config.prefix + '/sessions/:id/messages', auth: true },
-            { method: 'GET', path: config.prefix + '/sessions/:id/stream', auth: true, note: 'SSE' },
-            { method: 'GET', path: config.prefix + '/sessions/:id/history', auth: true },
-            { method: 'POST', path: config.prefix + '/sessions/:id/cancel', auth: true },
+            { method: 'GET', path: cfg.prefix + '/health', auth: false },
+            { method: 'POST', path: cfg.prefix + '/key', auth: 'first call only' },
+            { method: 'POST', path: cfg.prefix + '/sessions', auth: true },
+            { method: 'GET', path: cfg.prefix + '/sessions/discover', auth: true },
+            { method: 'POST', path: cfg.prefix + '/sessions/:id/adopt', auth: true },
+            { method: 'POST', path: cfg.prefix + '/sessions/:id/messages', auth: true },
+            { method: 'GET', path: cfg.prefix + '/sessions/:id/stream', auth: true, note: 'SSE' },
+            { method: 'GET', path: cfg.prefix + '/sessions/:id/history', auth: true },
+            { method: 'POST', path: cfg.prefix + '/sessions/:id/cancel', auth: true },
           ],
         })
       }
@@ -648,7 +652,7 @@ export default {
       if (seg.length === 1 && seg[0] === 'key' && req.method === 'POST') {
         if (apiKey !== null && !authorized(req)) return sendJson(res, 401, { error: 'unauthorized' })
         if (apiKey === null) {
-          if (!config.allowKeyProvision) return sendJson(res, 403, { error: 'key provisioning disabled; use config.apiKeys' })
+          if (!cfg.allowKeyProvision) return sendJson(res, 403, { error: 'key provisioning disabled; use config.apiKeys' })
           apiKey = randomToken('apigw-', 32)
           ctx.logger?.info?.(`[api-gateway] API key provisioned: ${apiKey}`)
         }
@@ -660,15 +664,22 @@ export default {
         if (!isAdmin(req)) return sendJson(res, 401, { error: 'admin_unauthorized' })
         let body: Record<string, unknown> = {}
         try { body = await readBody(req) } catch (error) { return sendJson(res, 400, { error: errorDetail(error) }) }
-        enabled = body.enabled === true
-        if (!enabled) {
+        const nextEnabled = body.enabled === true
+        if (settingsScope !== null) {
+          try { await settingsScope.update({ enabled: nextEnabled }) } catch (error) {
+            return sendJson(res, 500, { error: 'settings_update_failed', detail: errorDetail(error) })
+          }
+        } else {
+          cfg = { ...cfg, enabled: nextEnabled }
+        }
+        if (!cfg.enabled) {
           for (const entry of apiSessions.values()) {
             for (const r of Array.from(entry.subscribers)) { try { r.end() } catch { /* noop */ } }
             entry.subscribers.clear()
             releasePump(entry)
           }
         }
-        return sendJson(res, 200, { enabled, sessions: apiSessions.size })
+        return sendJson(res, 200, { enabled: cfg.enabled, sessions: apiSessions.size })
       }
       if (seg.length === 2 && seg[0] === 'admin' && seg[1] === 'rotate-key' && req.method === 'POST') {
         if (!isAdmin(req)) return sendJson(res, 401, { error: 'admin_unauthorized' })
@@ -703,7 +714,7 @@ export default {
 
       if (seg.length === 2 && seg[0] === 'sessions' && seg[1] === 'discover' && req.method === 'GET') {
         if (!requireAuth(req, res)) return
-        if (!config.allowDiscover) return sendJson(res, 403, { error: 'discover_disabled' })
+        if (!cfg.allowDiscover) return sendJson(res, 403, { error: 'discover_disabled' })
         if (sessionQuery?.listSessions === undefined) return sendJson(res, 501, { error: 'discover_unavailable' })
         let records: unknown[] = []
         try { records = await sessionQuery.listSessions() } catch (error) {
@@ -719,7 +730,7 @@ export default {
 
       if (seg.length === 3 && seg[0] === 'sessions' && seg[2] === 'adopt' && req.method === 'POST') {
         if (!requireAuth(req, res)) return
-        if (!config.allowAdopt) return sendJson(res, 403, { error: 'adopt_disabled' })
+        if (!cfg.allowAdopt) return sendJson(res, 403, { error: 'adopt_disabled' })
         let result
         try {
           result = await adoptSession(seg[1])
@@ -753,7 +764,7 @@ export default {
             events: mappedHistory(snapshot),
           })
         }
-        if (entry === undefined) return sendJson(res, 404, { error: 'session_not_found', hint: `adopt the session first: POST ${config.prefix}/sessions/:id/adopt` })
+        if (entry === undefined) return sendJson(res, 404, { error: 'session_not_found', hint: `adopt the session first: POST ${cfg.prefix}/sessions/:id/adopt` })
         // hello replays the durable history (live-preferred), falling back to
         // the in-memory tail captured while streaming.
         const snapshot = await readSessionSnapshot(seg[1])
@@ -778,7 +789,7 @@ export default {
       if (seg.length === 3 && seg[0] === 'sessions' && seg[2] === 'messages' && req.method === 'POST') {
         if (!requireAuth(req, res)) return
         const entry = apiSessions.get(seg[1])
-        if (entry === undefined) return sendJson(res, 404, { error: 'session_not_found', hint: `adopt the session first: POST ${config.prefix}/sessions/:id/adopt` })
+        if (entry === undefined) return sendJson(res, 404, { error: 'session_not_found', hint: `adopt the session first: POST ${cfg.prefix}/sessions/:id/adopt` })
         let body: Record<string, unknown> = {}
         try { body = await readBody(req) } catch (error) { return sendJson(res, 400, { error: errorDetail(error) }) }
         let content: unknown[] | null = null
@@ -797,7 +808,7 @@ export default {
       if (seg.length === 3 && seg[0] === 'sessions' && seg[2] === 'cancel' && req.method === 'POST') {
         if (!requireAuth(req, res)) return
         const entry = apiSessions.get(seg[1])
-        if (entry === undefined) return sendJson(res, 404, { error: 'session_not_found', hint: `adopt the session first: POST ${config.prefix}/sessions/:id/adopt` })
+        if (entry === undefined) return sendJson(res, 404, { error: 'session_not_found', hint: `adopt the session first: POST ${cfg.prefix}/sessions/:id/adopt` })
         entry.agent.cancel({ kind: 'user' })
         return sendJson(res, 200, { ok: true, sessionId: seg[1] })
       }
@@ -807,10 +818,12 @@ export default {
 
     ctx.on('session/event', onSessionEvent)
 
-    ctx.effect(() => {
+    let disposeRoute: (() => void) | null = null
+    const mountRoute = () => {
+      if (disposeRoute !== null) { try { disposeRoute() } catch { /* noop */ } ; disposeRoute = null }
       const route: WebRoute = {
         kind: 'prefix',
-        path: config.prefix,
+        path: cfg.prefix,
         handler: (req, res) => {
           Promise.resolve(dispatch(req, res)).catch((error) => {
             ctx.logger?.warn?.(`[api-gateway] request failed: ${String(error)}`)
@@ -821,9 +834,13 @@ export default {
           })
         },
       }
-      const disposeRoute = webServer.register(route)
+      disposeRoute = webServer.register(route)
+    }
+
+    ctx.effect(() => {
+      mountRoute()
       return () => {
-        try { disposeRoute() } catch { /* noop */ }
+        if (disposeRoute !== null) { try { disposeRoute() } catch { /* noop */ } ; disposeRoute = null }
         for (const entry of apiSessions.values()) {
           releasePump(entry)
           for (const r of Array.from(entry.subscribers)) { try { r.end() } catch { /* noop */ } }
@@ -837,6 +854,30 @@ export default {
       }
     })
 
-    ctx.logger?.info?.(`[api-gateway] mounted at ${config.prefix} (enabled=${String(enabled)})`)
+    // rc.7 settings integration: expose the gateway Config as a live settings
+    // namespace so the browser card (`settings.plugin.item` keyed 'api-gateway')
+    // is served, and edits apply without a restart. Secret fields (adminKey /
+    // apiKeys) are declared `role('secret')` in the schema, so the wire surface
+    // redacts them. Non-fatal by design: a deployment without a settings
+    // provider simply keeps the composition-row config.
+    ctx.inject(['settings'], (sctx) => {
+      try {
+        const scope = sctx.settings.register(settingsNamespace('api-gateway'), Config, { base: config, applies: 'live' })
+        settingsScope = scope
+        const resolved = scope.get()
+        const prefixChanged = resolved.prefix !== cfg.prefix
+        cfg = resolved
+        if (prefixChanged) mountRoute()
+        scope.watch((next, prev) => {
+          const changed = next.prefix !== prev.prefix
+          cfg = next
+          if (changed) mountRoute()
+        })
+      } catch (error) {
+        ctx.logger?.warn?.(`[api-gateway] settings namespace not registered: ${String(error)}`)
+      }
+    })
+
+    ctx.logger?.info?.(`[api-gateway] mounted at ${cfg.prefix} (enabled=${String(cfg.enabled)})`)
   },
 }
