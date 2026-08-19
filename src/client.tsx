@@ -238,7 +238,7 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
         React.createElement('select', {
           style: style.input, disabled: !ready || !writable,
           value: String((value as any)[f.key] ?? 'auto'),
-          onChange: (ev) => select(f.key, (ev.target as HTMLSelectElement).value),
+          onChange: (ev: React.ChangeEvent<HTMLSelectElement>) => select(f.key, ev.target.value),
         }, ...(f.options ?? []).map((o) => React.createElement('option', { key: o.value, value: o.value }, o.label))),
         React.createElement('span', { style: style.hint }, f.hint),
       ),
