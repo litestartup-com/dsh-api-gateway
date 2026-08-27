@@ -2,13 +2,21 @@
  * dsh-api-gateway — Client half (Web).
  *
  * Registers one card in Settings → Plugins → Configurable (`settings.plugin.item`).
- * Since DSH 0.1.0-rc.7 that slot is KEYED on the settings namespace a card
- * edits, so this plugin:
- *   - registers a live settings namespace `api-gateway` on the Host (see
+ * That slot is KEYED on the settings namespace a card edits, so this plugin:
+ *   - registers a live settings namespace `dsh-api-gw` on the Host (see
  *     src/index.ts), and
  *   - registers its card here under that same key, reading and writing the
  *     gateway Config through the client `settingsScope` (the typert @Remote
  *     settings surface) instead of its own ad-hoc HTTP admin calls.
+ *
+ * The namespace is `dsh-api-gw`, not `api-gateway`: DSH itself ships a built-in
+ * `@deepseek-ai/dsh-api-gateway` plugin (the typert Remote dispatcher), and two
+ * entries reading `api-gateway` in the plugin list are indistinguishable.
+ *
+ * The card is collapsed by default and discloses in place, matching the
+ * built-in plugin cards: which card a reader has open is card-local state the
+ * Host has no stake in. Staged edits outlive collapsing, so the header marks a
+ * card holding unsaved edits.
  *
  * Runtime-only state (live session count, whether a provisioned API key exists)
  * still comes from the gateway's own `GET /health`; key rotation still goes
@@ -17,7 +25,9 @@
  */
 import React from 'react'
 
-const NS = 'api-gateway'
+const NS = 'dsh-api-gw'
+const CARD_TITLE = 'dsh-api-gw'
+const CARD_DESCRIPTION = 'REST + SSE 网关：第三方客户端创建会话、流式收包、接管 GUI 会话'
 const DEFAULT_PREFIX = '/api-gw/v1'
 
 interface GatewayConfig {
@@ -41,32 +51,81 @@ interface RuntimeState {
   apiKeySet?: boolean
 }
 
-const style: Record<string, React.CSSProperties> = {
-  card: {
-    display: 'flex', flexDirection: 'column', gap: '10px',
-    padding: '14px', maxWidth: '680px',
-    border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '10px',
-    background: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-primary)',
-    fontSize: '13px', lineHeight: '20px',
-  },
-  row: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' as const },
-  field: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' as const },
-  label: { minWidth: '150px' },
-  hint: { flexBasis: '100%', fontSize: '11px', opacity: 0.55, marginTop: '-2px' },
-  dot: { width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0 },
-  muted: { fontSize: '12px', opacity: 0.65 },
-  mono: { fontFamily: 'monospace', fontSize: '12px', opacity: 0.8, wordBreak: 'break-all' as const },
-  button: {
-    border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent',
-    color: 'var(--dsw-alias-label-primary)', font: 'inherit', cursor: 'pointer',
-    borderRadius: '6px', padding: '4px 10px',
-  },
-  input: {
-    border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)',
-    color: 'var(--dsw-alias-label-primary)', font: 'inherit', borderRadius: '6px',
-    padding: '4px 8px', width: '220px',
-  },
-  toggle: { width: '16px', height: '16px', accentColor: '#16a34a' },
+/**
+ * Card chrome, mirroring the built-in plugin cards' geometry and design tokens.
+ * Injected once as a plugin-owned <style> tag: the card lives inside the host's
+ * card list, so it has to read as one of them rather than as a bolted-on panel.
+ */
+const CSS_TAG = 'dsh-api-gw/card.css'
+const c = {
+  card: 'dshApiGw_card',
+  cardOpen: 'dshApiGw_cardOpen',
+  header: 'dshApiGw_header',
+  headText: 'dshApiGw_headText',
+  name: 'dshApiGw_name',
+  description: 'dshApiGw_description',
+  pending: 'dshApiGw_pending',
+  chevron: 'dshApiGw_chevron',
+  chevronOpen: 'dshApiGw_chevronOpen',
+  body: 'dshApiGw_body',
+  status: 'dshApiGw_status',
+  dot: 'dshApiGw_dot',
+  mono: 'dshApiGw_mono',
+  field: 'dshApiGw_field',
+  label: 'dshApiGw_label',
+  hint: 'dshApiGw_hint',
+  input: 'dshApiGw_input',
+  toggle: 'dshApiGw_toggle',
+  muted: 'dshApiGw_muted',
+  error: 'dshApiGw_error',
+  footer: 'dshApiGw_footer',
+  discard: 'dshApiGw_discard',
+  save: 'dshApiGw_save',
+  ghost: 'dshApiGw_ghost',
+}
+
+const CSS = `
+.${c.card}{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}
+.${c.card}:hover{border-color:var(--dsw-alias-label-dimmed)}
+.${c.cardOpen}{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
+.${c.header}{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}
+.${c.header}:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.${c.headText}{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}
+.${c.name}{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}
+.${c.description}{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
+.${c.pending}{white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);border-radius:999px;flex:none;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}
+.${c.chevron}{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}
+.${c.chevronOpen}{transform:rotate(180deg)}
+.${c.body}{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding:4px 0 8px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
+.${c.status}{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 0 4px}
+.${c.dot}{width:8px;height:8px;border-radius:50%;flex:none}
+.${c.mono}{font-family:monospace;font-size:12px;color:var(--dsw-alias-label-tertiary);word-break:break-all}
+.${c.field}{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 0}
+.${c.label}{min-width:150px;color:var(--dsw-alias-label-secondary)}
+.${c.hint}{flex-basis:100%;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}
+.${c.input}{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;border-radius:8px;padding:4px 8px;width:220px}
+.${c.input}:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.${c.toggle}{width:16px;height:16px;accent-color:var(--dsw-alias-brand-primary)}
+.${c.muted}{font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.${c.error}{margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-error)}
+.${c.footer}{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding:12px 0 4px;display:flex;flex-wrap:wrap}
+.${c.discard},.${c.save},.${c.ghost}{appearance:none;font:inherit;cursor:pointer;border:1px solid transparent;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}
+.${c.discard},.${c.ghost}{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0}
+.${c.discard}:hover:not(:disabled),.${c.ghost}:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}
+.${c.ghost}{margin-right:auto}
+.${c.save}{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
+.${c.discard}:disabled,.${c.save}:disabled,.${c.ghost}:disabled{opacity:.4;cursor:default}
+.${c.discard}:focus-visible,.${c.save}:focus-visible,.${c.ghost}:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+`
+
+const ensureStyles = () => {
+  if (typeof document === 'undefined') return
+  if (document.querySelector(`style[data-plugin-css="${CSS_TAG}"]`) !== null) return
+  const tag = document.createElement('style')
+  tag.dataset.plugin = 'dsh-api-gateway'
+  tag.dataset.pluginCss = CSS_TAG
+  tag.textContent = CSS
+  document.head.appendChild(tag)
 }
 
 type FieldKind = 'toggle' | 'number' | 'text' | 'select' | 'secret'
@@ -105,6 +164,7 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
   const writable = snap?.writable !== false
   const prefix = (value.prefix && String(value.prefix) !== '') ? String(value.prefix) : DEFAULT_PREFIX
 
+  const [open, setOpen] = React.useState(false)
   const [drafts, setDrafts] = React.useState<Record<string, string>>({})
   const [saving, setSaving] = React.useState(false)
   const [error, setError] = React.useState('')
@@ -112,7 +172,10 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
   const [freshKey, setFreshKey] = React.useState<string | null>(null)
   const [rotating, setRotating] = React.useState(false)
 
+  // Only poll while the card is disclosed: a collapsed card shows no runtime
+  // state, so polling for it would be a request nobody reads.
   React.useEffect(() => {
+    if (!open) return
     let alive = true
     const refresh = () => {
       fetch(prefix + '/health')
@@ -123,7 +186,7 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
     refresh()
     const handle = setInterval(refresh, 3000)
     return () => { alive = false; clearInterval(handle) }
-  }, [prefix])
+  }, [prefix, open])
 
   const draft = (key: string) => drafts[key] ?? ''
   const setDraft = (key: string, text: string) => setDrafts((prev) => ({ ...prev, [key]: text }))
@@ -183,6 +246,11 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
     }
   }
 
+  const discard = () => {
+    setDrafts({})
+    setError('')
+  }
+
   const rotate = async () => {
     setRotating(true)
     setError('')
@@ -204,84 +272,121 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
   }
 
   const on = value.enabled === true
-  const statusDot = ready ? (on ? '#16a34a' : 'var(--dsw-alias-state-error-primary)') : '#a1a1aa'
+  const statusDot = ready ? (on ? '#16a34a' : 'var(--dsw-alias-label-error)') : 'var(--dsw-alias-label-dimmed)'
   const statusText = !ready ? '加载中…' : on ? '已启用' : '已停用'
+  const dirty = Object.keys(drafts).length > 0
 
-  return React.createElement('div', { style: style.card },
-    React.createElement('div', { style: style.row },
-      React.createElement('strong', null, 'API Gateway'),
-      React.createElement('span', { style: { ...style.dot, background: statusDot } }),
-      React.createElement('span', null, statusText),
-      React.createElement('span', { style: style.muted }, `会话数 ${runtime?.sessions ?? 0}`),
-      runtime?.apiKeySet === true
-        ? React.createElement('span', { style: style.muted }, '· API 密钥已发放')
-        : React.createElement('span', { style: style.muted }, '· 尚未发放 API 密钥'),
+  const chevron = React.createElement('svg', {
+    className: c.chevron + (open ? ' ' + c.chevronOpen : ''),
+    width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true,
+  }, React.createElement('path', {
+    d: 'M3.5 5.5L7 9l3.5-3.5', stroke: 'currentColor', strokeWidth: 1.4,
+    strokeLinecap: 'round', strokeLinejoin: 'round',
+  }))
+
+  const header = React.createElement('button', {
+    type: 'button',
+    className: c.header,
+    'aria-expanded': open,
+    'aria-label': `${open ? '折叠' : '展开'}：${CARD_TITLE}`,
+    onClick: () => setOpen(!open),
+  },
+    React.createElement('span', { className: c.headText },
+      React.createElement('span', { className: c.name }, CARD_TITLE),
+      React.createElement('span', { className: c.description }, CARD_DESCRIPTION),
     ),
-    React.createElement('div', { style: style.mono }, `入口 ${prefix} · 流式 GET /sessions/:id/stream (SSE)`),
-    !writable ? React.createElement('div', { style: { ...style.muted, color: 'var(--dsw-alias-state-error-primary)' } }, '设置文档只读，无法保存更改') : null,
+    dirty ? React.createElement('span', { className: c.pending }, '未保存') : null,
+    chevron,
+  )
+
+  const body = !open ? null : React.createElement('div', { className: c.body },
+    React.createElement('div', { className: c.status },
+      React.createElement('span', { className: c.dot, style: { background: statusDot } }),
+      React.createElement('span', null, statusText),
+      React.createElement('span', { className: c.muted }, `会话数 ${runtime?.sessions ?? 0}`),
+      React.createElement('span', { className: c.muted }, runtime?.apiKeySet === true ? '· API 密钥已发放' : '· 尚未发放 API 密钥'),
+    ),
+    React.createElement('div', { className: c.mono }, `入口 ${prefix} · 流式 GET /sessions/:id/stream (SSE)`),
+    !writable ? React.createElement('p', { className: c.error, role: 'status' }, '设置文档只读，无法保存更改') : null,
 
     ...FIELDS.filter((f) => f.kind === 'toggle').map((f) => {
       const checked = (value as any)[f.key] === true
-      return React.createElement('div', { key: f.key, style: style.field },
+      return React.createElement('div', { key: f.key, className: c.field },
         React.createElement('input', {
-          type: 'checkbox', style: style.toggle, checked, disabled: !ready || !writable,
-          onChange: (ev) => toggle(f.key, (ev.target as HTMLInputElement).checked),
+          type: 'checkbox', className: c.toggle, checked, disabled: !ready || !writable,
+          onChange: (ev: React.ChangeEvent<HTMLInputElement>) => toggle(f.key, ev.target.checked),
         }),
-        React.createElement('span', { style: style.label }, f.label),
-        React.createElement('span', { style: style.hint }, f.hint),
+        React.createElement('span', { className: c.label }, f.label),
+        React.createElement('span', { className: c.hint }, f.hint),
       )
     }),
 
     ...FIELDS.filter((f) => f.kind === 'select').map((f) =>
-      React.createElement('div', { key: f.key, style: style.field },
-        React.createElement('span', { style: style.label }, f.label),
+      React.createElement('div', { key: f.key, className: c.field },
+        React.createElement('span', { className: c.label }, f.label),
         React.createElement('select', {
-          style: style.input, disabled: !ready || !writable,
+          className: c.input, disabled: !ready || !writable,
           value: String((value as any)[f.key] ?? 'auto'),
           onChange: (ev: React.ChangeEvent<HTMLSelectElement>) => select(f.key, ev.target.value),
         }, ...(f.options ?? []).map((o) => React.createElement('option', { key: o.value, value: o.value }, o.label))),
-        React.createElement('span', { style: style.hint }, f.hint),
+        React.createElement('span', { className: c.hint }, f.hint),
       ),
     ),
 
     ...FIELDS.filter((f) => f.kind === 'text' || f.kind === 'number').map((f) =>
-      React.createElement('div', { key: f.key, style: style.field },
-        React.createElement('span', { style: style.label }, f.label),
+      React.createElement('div', { key: f.key, className: c.field },
+        React.createElement('span', { className: c.label }, f.label),
         React.createElement('input', {
-          type: 'text', style: style.input,
+          type: 'text', className: c.input,
           inputMode: f.kind === 'number' ? 'numeric' : undefined,
           placeholder: f.placeholder ?? '',
           disabled: !ready || !writable,
           value: drafts[f.key] !== undefined ? drafts[f.key] : formatValue(f),
-          onChange: (ev) => setDraft(f.key, (ev.target as HTMLInputElement).value),
+          onChange: (ev: React.ChangeEvent<HTMLInputElement>) => setDraft(f.key, ev.target.value),
         }),
-        React.createElement('span', { style: style.hint }, f.hint),
+        React.createElement('span', { className: c.hint }, f.hint),
       ),
     ),
 
-    React.createElement('div', { style: style.field },
-      React.createElement('span', { style: style.label }, '管理密钥'),
+    React.createElement('div', { className: c.field },
+      React.createElement('span', { className: c.label }, '管理密钥'),
       React.createElement('input', {
-        type: 'password', style: style.input, placeholder: '留空不修改',
+        type: 'password', className: c.input, placeholder: '留空不修改',
         disabled: !ready || !writable,
         value: draft('adminKey'),
-        onChange: (ev) => setDraft('adminKey', (ev.target as HTMLInputElement).value),
+        onChange: (ev: React.ChangeEvent<HTMLInputElement>) => setDraft('adminKey', ev.target.value),
       }),
-      React.createElement('span', { style: style.hint }, '只写不回显；用于 /admin/* 与轮换'),
+      React.createElement('span', { className: c.hint }, '只写不回显；用于 /admin/* 与轮换'),
     ),
 
-    React.createElement('div', { style: style.row },
-      React.createElement('button', { type: 'button', style: style.button, disabled: saving || !ready || !writable, onClick: () => void saveAll() }, saving ? '保存中…' : '保存配置'),
-      React.createElement('button', { type: 'button', style: style.button, disabled: rotating, onClick: () => void rotate() }, rotating ? '轮换中…' : '轮换 API 密钥'),
+    freshKey !== null ? React.createElement('div', { className: c.mono }, '新 API 密钥: ', freshKey) : null,
+    error !== '' ? React.createElement('p', { className: c.error, role: 'status' }, error) : null,
+
+    React.createElement('div', { className: c.footer },
+      React.createElement('button', {
+        type: 'button', className: c.ghost, disabled: rotating,
+        onClick: () => void rotate(),
+      }, rotating ? '轮换中…' : '轮换 API 密钥'),
+      React.createElement('button', {
+        type: 'button', className: c.discard, disabled: !dirty || saving,
+        onClick: discard,
+      }, '放弃更改'),
+      React.createElement('button', {
+        type: 'button', className: c.save, disabled: saving || !dirty || !ready || !writable,
+        onClick: () => void saveAll(),
+      }, saving ? '保存中…' : '保存'),
     ),
-    freshKey !== null ? React.createElement('div', { style: style.mono }, '新 API 密钥: ', freshKey) : null,
-    error !== '' ? React.createElement('div', { style: { ...style.muted, color: 'var(--dsw-alias-state-error-primary)' } }, error) : null,
   )
+
+  return React.createElement('li', {
+    className: c.card + (open ? ' ' + c.cardOpen : ''),
+  }, header, body)
 }
 
 export const inject = ['slots', 'connection', 'remote', 'settingsScope']
 
 export function apply(ctx: any) {
+  ensureStyles()
   const scope = ctx.settingsScope.bind({ namespace: NS })
   const subscribe = (cb: () => void) => scope.subscribe(cb)
   const getSnapshot = () => scope.getSnapshot()

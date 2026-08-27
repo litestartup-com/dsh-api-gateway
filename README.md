@@ -11,7 +11,7 @@ dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 ## Features
 
 - **REST + SSE**: 9 endpoints; token-level streaming (`assistant/chunk`), server closes the stream at `turn_end`
-- **GUI settings card**: Settings → Plugins → Configurable → API Gateway (status, soft on/off, key rotation)
+- **GUI settings card**: Settings → Plugins → Configurable → **dsh-api-gw** (collapsed by default, discloses via the chevron; status, soft on/off, key rotation)
 - **Workspace membership**: API sessions land in real workspaces and show grouped in the sidebar, never under "ungrouped"
 - **Session discovery & adoption**: list all sessions, read any session's full history (read-only), and adopt a GUI session to keep driving it over the API — live co-driving or cold resume with full context
 - **Reasoning split**: replies separate `text` (visible answer) from `reasoning` (thinking), never concatenated
@@ -52,7 +52,7 @@ The plugin is an ordinary Cordis row; you can also compose it by hand. It publis
     defaultWorkspacePath: ''    # fallback directory for auto mode
     allowDiscover: true         # GET /sessions/discover
     allowAdopt: true            # POST /sessions/:id/adopt
-    corsOrigin: '*'             # '*' or an explicit origin / list
+    corsOrigin: '*'             # '*' or an explicit origin / list (list is matched against the request Origin)
     exposeErrors: true          # include internal details in error responses
     sseHeartbeatMs: 30000       # SSE heartbeat interval (0 disables)
     bodyTimeoutMs: 30000        # request body read timeout

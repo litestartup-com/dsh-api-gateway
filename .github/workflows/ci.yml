@@ -18,6 +18,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # Unit tests run against the built output in lib/, so they also guard the
+      # shape the deployment actually loads.
+      - run: pnpm test
       # Syntax sanity for the client bundle (it ships as .tsx source and is
       # bundled by the consuming deployment, but must at least parse).
       - run: node --experimental-strip-types --check src/index.ts

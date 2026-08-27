@@ -1,2 +1,6 @@
 node_modules/
 *.tsbuildinfo
+
+# local development context (not published, not tracked)
+CONTEXT.md
+RULE.md

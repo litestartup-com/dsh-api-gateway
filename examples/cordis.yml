@@ -29,7 +29,7 @@
     defaultWorkspacePath: ''    # 可选：auto 模式下无 cwd 时的默认归属目录
     allowDiscover: true         # 可选：允许 GET /sessions/discover（列出全部会话）
     allowAdopt: true            # 可选：允许 POST /sessions/:id/adopt（接管任意会话）
-    corsOrigin: '*'             # 可选：CORS 源（'*' 或具体域/数组；公开部署建议收敛）
+    corsOrigin: '*'             # 可选：CORS 源（'*' 或具体域/数组，数组按请求 Origin 匹配回显；公开部署建议收敛）
     exposeErrors: true          # 可选：错误响应是否带内部细节（公开部署建议 false）
 
 # 卸载 = 删除上面这一行（可选 pnpm remove dsh-api-gateway），重启。

@@ -24,7 +24,16 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createRequire } from 'node:module'
 import z from '@deepseek-ai/schemastery'
+import { eventPayload, mapEvents, sseFrame, type GatewayEvent } from './events.js'
+import { decodeBody, mapHeader, resolveCorsOrigin, routeSegments } from './http.js'
+
+/** Single source of truth for the version advertised by the service index. */
+const VERSION: string = (() => {
+  try { return String((createRequire(import.meta.url)('../package.json') as { version?: unknown }).version ?? '0.0.0') }
+  catch { return '0.0.0' }
+})()
 
 export interface Config {
   /** Route prefix. Defaults to /api-gw/v1. */
@@ -98,8 +107,6 @@ interface AgentLike {
   cancel(cause: { kind: 'user' | 'disposed' }): void
 }
 
-type GatewayEvent = { kind: string; seq: number; [key: string]: unknown }
-
 /**
  * Structural faces for host services this plugin consumes but whose rich
  * types are not exported on the public `Context` surface. `inject` still
@@ -132,7 +139,7 @@ export default {
     const agentsService = ctx.get('agents') as { get?: (id: string) => unknown } | undefined
 
     // Mutable runtime config: seeded from the composition row, then re-applied
-    // live from the settings namespace (rc.7 settings integration) below.
+    // live from the settings namespace (settings integration) below.
     let cfg = config
     let settingsScope: { update: (patch: object) => Promise<void> } | null = null
     let apiKey: string | null = null
@@ -172,29 +179,34 @@ export default {
       try { (ctx as any).events?.emit?.(name, payload) } catch { /* listeners never break the gateway */ }
     }
 
-    const setCors = (res: ServerResponse) => {
-      const origins = Array.isArray(cfg.corsOrigin) ? cfg.corsOrigin : [cfg.corsOrigin]
-      res.setHeader('Access-Control-Allow-Origin', origins.join(', ') || '*')
+    /**
+     * `Access-Control-Allow-Origin` carries a single value, so an allow-list is
+     * matched against the request Origin and echoed (with `Vary: Origin`); a
+     * disallowed requester gets no header at all.
+     */
+    const setCors = (res: ServerResponse, req?: IncomingMessage) => {
+      const requestOrigin = typeof req?.headers?.origin === 'string' ? req.headers.origin : undefined
+      const { origin, vary } = resolveCorsOrigin(cfg.corsOrigin, requestOrigin)
+      if (origin !== null) res.setHeader('Access-Control-Allow-Origin', origin)
+      if (vary) res.setHeader('Vary', 'Origin')
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
       res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, x-api-key, x-admin-key')
       res.setHeader('Access-Control-Max-Age', '600')
     }
 
     const sendJson = (res: ServerResponse, status: number, obj: unknown) => {
-      setCors(res)
       res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify(obj))
     }
 
     const readBody = (req: IncomingMessage) => new Promise<Record<string, unknown>>((resolve, reject) => {
-      console.error('[agw-debug] readBody START')
       const chunks: Buffer[] = []
       let size = 0
       let settled = false
       const stopTimer = timer !== undefined ? timer.timeout(() => {
         if (settled) return
         settled = true
-        console.error('[agw-debug] readBody TIMEOUT fired')
+        ctx.logger?.debug?.(`[dsh-api-gw] body read timed out after ${cfg.bodyTimeoutMs}ms`)
         reject(new Error('body read timeout'))
         try { req.destroy() } catch { /* noop */ }
       }, cfg.bodyTimeoutMs) : (() => {})
@@ -210,18 +222,7 @@ export default {
         chunks.push(chunk)
       })
       req.on('end', () => {
-        console.error('[agw-debug] readBody END bytes=' + size)
-        const buf = Buffer.concat(chunks)
-        // Honor the request charset (RFC 9110): default UTF-8, but accept
-        // e.g. gbk/gb2312 from clients that still send ANSI-encoded bodies
-        // (notably Windows PowerShell 5.1).
-        const charset = /charset=([^;]+)/i.exec(String(req.headers['content-type'] ?? ''))?.[1]?.trim()
-        let text: string
-        if (charset !== undefined && charset !== '' && !/^utf-?8$/i.test(charset)) {
-          try { text = new TextDecoder(charset).decode(buf) } catch { text = buf.toString('utf8') }
-        } else {
-          text = buf.toString('utf8')
-        }
+        const text = decodeBody(Buffer.concat(chunks), req.headers['content-type'])
         if (text.trim() === '') return finish(() => resolve({}))
         try { finish(() => resolve(JSON.parse(text))) } catch { finish(() => reject(new Error('invalid JSON body'))) }
       })
@@ -259,80 +260,6 @@ export default {
       return false
     }
 
-    // ---- event mapping (leaf-field reads only; never serialize live objects) ----
-
-    // Visible text and thinking content are split, never concatenated.
-    const extractBlocks = (content: unknown) => {
-      let text = ''
-      let reasoning = ''
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block !== null && typeof block === 'object') {
-            if ((block as any).type === 'text') text += String((block as any).text)
-            else if ((block as any).type === 'reasoning') reasoning += String((block as any).text)
-          }
-        }
-      }
-      return { text, reasoning }
-    }
-
-    const chunkJson = (chunk: unknown): Record<string, unknown> | null => {
-      if (chunk === null || typeof chunk !== 'object') return null
-      const c = chunk as any
-      switch (c.type) {
-        case 'text-delta': return { type: 'text-delta', text: String(c.text) }
-        case 'reasoning-delta': return { type: 'reasoning-delta', text: String(c.text) }
-        case 'tool-call-delta': return { type: 'tool-call-delta', id: c.id == null ? null : String(c.id), name: c.name == null ? null : String(c.name), argumentsDelta: String(c.argumentsDelta ?? '') }
-        case 'usage': return { type: 'usage', usage: c.usage }
-        case 'finish': return { type: 'finish', reason: c.reason?.kind ? String(c.reason.kind) : 'unknown' }
-        default: return null
-      }
-    }
-
-    const eventPayload = (event: unknown): GatewayEvent | null => {
-      if (event === null || typeof event !== 'object') return null
-      const e = event as any
-      const data = e.data ?? null
-      switch (e.type) {
-        case 'user/message':
-          return { kind: 'user', seq: e.seq, messageId: data?.id ? String(data.id) : null, text: extractBlocks(data?.content).text }
-        case 'assistant/chunk': {
-          const c = chunkJson(data?.chunk)
-          if (c === null) return null
-          return { kind: 'chunk', seq: e.seq, chunk: c }
-        }
-        case 'assistant/message': {
-          const parts = extractBlocks(data?.message?.content)
-          return { kind: 'message', seq: e.seq, text: parts.text, reasoning: parts.reasoning !== '' ? parts.reasoning : null, usage: data?.usage ?? null }
-        }
-        case 'tool/call':
-          return { kind: 'tool_call', seq: e.seq, name: data ? String(data.name) : '', arguments: data ? String(data.arguments) : '' }
-        case 'tool/result': {
-          const message = data?.message
-          const block = message && Array.isArray(message.content) ? message.content[0] : null
-          return {
-            kind: 'tool_result',
-            seq: e.seq,
-            isError: Boolean(data && (data.error || (block && block.isError))),
-            text: block?.content ? extractBlocks(block.content).text : '',
-          }
-        }
-        case 'turn/start':
-          return { kind: 'turn_start', seq: e.seq, turn: data?.turn ?? null }
-        case 'turn/end': {
-          const reason = data?.reason ?? null
-          let detail = null
-          if (reason?.kind === 'error' && reason.error) detail = { message: String(reason.error.message ?? ''), code: String(reason.error.code ?? '') }
-          if (reason?.kind === 'aborted' && reason.reason) detail = { cause: String(reason.reason.kind ?? '') }
-          return { kind: 'turn_end', seq: e.seq, turn: data?.turn ?? null, reason: reason ? String(reason.kind) : 'unknown', detail }
-        }
-        default:
-          return null
-      }
-    }
-
-    const sseFrame = (payload: GatewayEvent) => 'data: ' + JSON.stringify(payload) + '\n\n'
-
     // ---- SSE fan-out + pump ----
 
     const writeToSubscribers = (entry: SessionEntry, frame: string) => {
@@ -351,7 +278,7 @@ export default {
       entry.log.push(payload)
       if (entry.log.length > 500) entry.log.splice(0, entry.log.length - 500)
       if (payload.kind === 'turn_end' && payload.reason === 'error') {
-        ctx.logger?.warn?.(`[api-gateway] session ${entry.agent.id} turn errored: ${(payload as any).detail?.message ?? 'unknown'}`)
+        ctx.logger?.warn?.(`[dsh-api-gw] session ${entry.agent.id} turn errored: ${(payload as any).detail?.message ?? 'unknown'}`)
       }
       writeToSubscribers(entry, sseFrame(payload))
       if (payload.kind === 'message') {
@@ -485,13 +412,9 @@ export default {
       const registry = ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
       if (registry === undefined) return null
       const resolveOrCreate = async (path: string, title?: string): Promise<WorkspaceHandle | null> => {
-        console.error('[agw-debug] resolveWorkspace: resolveByPath START path=' + path)
         const existing = await bounded(registry.resolveByPath(path), undefined, 5_000)
-        console.error('[agw-debug] resolveWorkspace: resolveByPath DONE existing=' + String(existing !== undefined))
         if (existing !== undefined) return existing
-        console.error('[agw-debug] resolveWorkspace: create START')
         const created = await bounded(registry.create(path, title), undefined, 5_000)
-        console.error('[agw-debug] resolveWorkspace: create DONE created=' + String(created !== undefined))
         return created ?? null
       }
       if (ws !== undefined && ws !== null) {
@@ -518,6 +441,21 @@ export default {
       }
       if (fallbackCwd === undefined) return null
       return resolveOrCreate(fallbackCwd)
+    }
+
+    /**
+     * Read-only workspace lookup for adopted sessions: report the membership a
+     * session already has (header cwd == workspace path), never create one —
+     * adoption observes an existing session, it must not mutate the sidebar.
+     */
+    const lookupWorkspace = async (cwd: string | undefined): Promise<SessionEntry['workspace']> => {
+      if (cwd === undefined || cwd === '') return null
+      const registry = ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
+      if (registry === undefined) return null
+      try {
+        const found = await bounded(registry.resolveByPath(cwd), undefined, 5_000)
+        return found === undefined ? null : { id: found.id, path: found.path, title: found.title }
+      } catch { return null }
     }
 
     const makeEntry = (agent: AgentLike, owned: boolean, dispose: (() => Promise<void> | void) | null, mode: SessionEntry['mode'], workspace: SessionEntry['workspace']): SessionEntry => ({
@@ -558,7 +496,6 @@ export default {
 
       // Proper ownership: the plugin fiber owns every created agent, so a
       // plugin stop or update tears each session down cleanly.
-      console.error('[agw-debug] createSession: createAgent START')
       const handle = await boundedOrThrow(agentLoop.createAgent(ctx, {
         sessionId,
         agentOptions: options,
@@ -575,12 +512,11 @@ export default {
           const presets = agentCtx.get('agentPresets') as { mount?: (c: Context, id?: string) => Promise<unknown> } | undefined
           if (presets?.mount !== undefined) {
             presets.mount(agentCtx).catch((error) => {
-              ctx.logger?.warn?.(`[api-gateway] preset mount failed for ${sessionId}: ${String(error)}`)
+              ctx.logger?.warn?.(`[dsh-api-gw] preset mount failed for ${sessionId}: ${String(error)}`)
             })
           }
         },
       }), 20_000, 'agent creation')
-      console.error('[agw-debug] createSession: createAgent DONE')
 
       const agent = handle.agent as AgentLike
 
@@ -602,15 +538,6 @@ export default {
 
     // ---- session discovery / history / adoption ----
 
-    const mapHeader = (header: unknown) => {
-      const h = header as { id?: unknown; title?: unknown; cwd?: unknown } | null | undefined
-      return {
-        id: typeof h?.id === 'string' ? h.id : null,
-        title: typeof h?.title === 'string' ? h.title : null,
-        cwd: typeof h?.cwd === 'string' ? h.cwd : null,
-      }
-    }
-
     const readSessionSnapshot = async (sessionId: string): Promise<{ session: unknown; events: unknown[] } | null> => {
       if (sessionQuery?.readSession === undefined) return null
       try {
@@ -621,15 +548,8 @@ export default {
       } catch { return null }
     }
 
-    const mappedHistory = (snapshot: { session: unknown; events: unknown[] } | null) => {
-      if (snapshot === null) return []
-      const out: GatewayEvent[] = []
-      for (const event of snapshot.events) {
-        const payload = eventPayload(event)
-        if (payload !== null) out.push(payload)
-      }
-      return out
-    }
+    const mappedHistory = (snapshot: { session: unknown; events: unknown[] } | null) =>
+      snapshot === null ? [] : mapEvents(snapshot.events)
 
     const adoptSession = async (sessionId: string): Promise<{ entry: SessionEntry; mode: SessionEntry['mode']; snapshot: { session: unknown; events: unknown[] } | null }> => {
       const existing = apiSessions.get(sessionId)
@@ -645,9 +565,10 @@ export default {
 
       if (liveAgent !== undefined && liveAgent !== null) {
         const agent = liveAgent as AgentLike
-        const entry = makeEntry(agent, false, null, 'live', null)
+        const workspace = await lookupWorkspace(agent.session.header.cwd)
+        const entry = makeEntry(agent, false, null, 'live', workspace)
         apiSessions.set(sessionId, entry)
-        emitGatewayEvent('gateway/session-created', { sessionId, mode: 'live', workspace: null, cwd: agent.session.header.cwd ?? null })
+        emitGatewayEvent('gateway/session-created', { sessionId, mode: 'live', workspace, cwd: agent.session.header.cwd ?? null })
         return { entry, mode: 'live', snapshot }
       }
 
@@ -659,24 +580,20 @@ export default {
         throw new Error(`resume_failed: ${String((error as Error).message ?? error)}`)
       }
       const agent = handle.agent as AgentLike
-      const entry = makeEntry(agent, true, () => handle.dispose?.(), 'resumed', null)
+      const workspace = await lookupWorkspace(agent.session.header.cwd)
+      const entry = makeEntry(agent, true, () => handle.dispose?.(), 'resumed', workspace)
       apiSessions.set(sessionId, entry)
-      emitGatewayEvent('gateway/session-created', { sessionId, mode: 'resumed', workspace: null, cwd: agent.session.header.cwd ?? null })
+      emitGatewayEvent('gateway/session-created', { sessionId, mode: 'resumed', workspace, cwd: agent.session.header.cwd ?? null })
       return { entry, mode: 'resumed', snapshot }
     }
 
     // ---- HTTP dispatch ----
 
     const dispatch = async (req: IncomingMessage, res: ServerResponse) => {
-      setCors(res)
+      setCors(res, req)
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
-      const pathname = String(req.url ?? '').split('?')[0]
-      const parts = pathname.split('/').filter((p) => p !== '')
-      const prefixParts = cfg.prefix.split('/').filter((p) => p !== '')
-      if (parts.length < prefixParts.length || parts.slice(0, prefixParts.length).join('/') !== prefixParts.join('/')) {
-        return sendJson(res, 404, { error: 'not_found', service: 'api-gateway' })
-      }
-      const seg = parts.slice(prefixParts.length)
+      const seg = routeSegments(cfg.prefix, req.url)
+      if (seg === null) return sendJson(res, 404, { error: 'not_found', service: 'dsh-api-gw' })
 
       // health stays reachable while disabled, for monitoring
       if (seg.length === 1 && seg[0] === 'health' && req.method === 'GET') {
@@ -686,7 +603,7 @@ export default {
 
       if (seg.length === 0 && req.method === 'GET') {
         return sendJson(res, 200, {
-          service: 'api-gateway', version: '0.1.0',
+          service: 'dsh-api-gw', version: VERSION,
           endpoints: [
             { method: 'GET', path: cfg.prefix + '/health', auth: false },
             { method: 'POST', path: cfg.prefix + '/key', auth: 'first call only' },
@@ -706,7 +623,7 @@ export default {
         if (apiKey === null) {
           if (!cfg.allowKeyProvision) return sendJson(res, 403, { error: 'key provisioning disabled; use config.apiKeys' })
           apiKey = randomToken('apigw-', 32)
-          ctx.logger?.info?.(`[api-gateway] API key provisioned: ${apiKey}`)
+          ctx.logger?.info?.(`[dsh-api-gw] API key provisioned: ${apiKey}`)
         }
         return sendJson(res, 200, { apiKey })
       }
@@ -736,7 +653,7 @@ export default {
       if (seg.length === 2 && seg[0] === 'admin' && seg[1] === 'rotate-key' && req.method === 'POST') {
         if (!isAdmin(req)) return sendJson(res, 401, { error: 'admin_unauthorized' })
         apiKey = randomToken('apigw-', 32)
-        ctx.logger?.info?.(`[api-gateway] API key rotated: ${apiKey}`)
+        ctx.logger?.info?.(`[dsh-api-gw] API key rotated: ${apiKey}`)
         return sendJson(res, 200, { apiKey })
       }
 
@@ -748,7 +665,7 @@ export default {
         try {
           entry = await createSession(body)
         } catch (error) {
-          ctx.logger?.warn?.(`[api-gateway] session creation failed: ${String(error)}`)
+          ctx.logger?.warn?.(`[dsh-api-gw] session creation failed: ${String(error)}`)
           const payload: Record<string, unknown> = { error: 'session_creation_failed', detail: errorDetail(error) }
           const workspaces = (error as { workspaces?: unknown[] }).workspaces
           if (Array.isArray(workspaces)) payload.workspaces = workspaces
@@ -850,9 +767,7 @@ export default {
         if (content === null) return sendJson(res, 400, { error: 'content must be a non-empty string or a non-empty array of content blocks' })
         const message = createUserMessage({ content: content as never, source: { kind: 'user' } })
         try {
-          console.error('[agw-debug] messages: followup START session=' + seg[1])
           entry.agent.followup(message)
-          console.error('[agw-debug] messages: followup DONE')
         } catch (error) {
           return sendJson(res, 500, { error: 'delivery_failed', detail: errorDetail(error) })
         }
@@ -880,7 +795,7 @@ export default {
         path: cfg.prefix,
         handler: (req, res) => {
           Promise.resolve(dispatch(req, res)).catch((error) => {
-            ctx.logger?.warn?.(`[api-gateway] request failed: ${String(error)}`)
+            ctx.logger?.warn?.(`[dsh-api-gw] request failed: ${String(error)}`)
             try {
               if (res.headersSent) res.destroy()
               else sendJson(res, 500, { error: 'internal_error', detail: errorDetail(error) })
@@ -908,15 +823,19 @@ export default {
       }
     })
 
-    // rc.7 settings integration: expose the gateway Config as a live settings
-    // namespace so the browser card (`settings.plugin.item` keyed 'api-gateway')
+    // Settings integration: expose the gateway Config as a live settings
+    // namespace so the browser card (`settings.plugin.item` keyed 'dsh-api-gw')
     // is served, and edits apply without a restart. Secret fields (adminKey /
     // apiKeys) are declared `role('secret')` in the schema, so the wire surface
     // redacts them. Non-fatal by design: a deployment without a settings
     // provider simply keeps the composition-row config.
+    //
+    // The namespace is 'dsh-api-gw': DSH ships a built-in
+    // `@deepseek-ai/dsh-api-gateway` (the typert Remote dispatcher), so a card
+    // keyed 'api-gateway' would be indistinguishable from it in the plugin list.
     ctx.inject(['settings'], (sctx) => {
       try {
-        const scope = sctx.settings.register(settingsNamespace('api-gateway'), Config, { base: config, applies: 'live' })
+        const scope = sctx.settings.register(settingsNamespace('dsh-api-gw'), Config, { base: config, applies: 'live' })
         settingsScope = scope
         const resolved = scope.get()
         const prefixChanged = resolved.prefix !== cfg.prefix
@@ -928,10 +847,10 @@ export default {
           if (changed) mountRoute()
         })
       } catch (error) {
-        ctx.logger?.warn?.(`[api-gateway] settings namespace not registered: ${String(error)}`)
+        ctx.logger?.warn?.(`[dsh-api-gw] settings namespace not registered: ${String(error)}`)
       }
     })
 
-    ctx.logger?.info?.(`[api-gateway] mounted at ${cfg.prefix} (enabled=${String(cfg.enabled)})`)
+    ctx.logger?.info?.(`[dsh-api-gw] mounted at ${cfg.prefix} (enabled=${String(cfg.enabled)})`)
   },
 }
