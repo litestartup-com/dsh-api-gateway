@@ -66,10 +66,25 @@ dsh plugin --profile web add ./dsh-api-gateway-0.1.0.tgz
 BASE=http://127.0.0.1:3080/api-gw/v1
 KEY=$(curl -s -X POST $BASE/key | jq -r .apiKey)              # 首调领钥，仅一次有效
 SID=$(curl -s -X POST $BASE/sessions -H "Authorization: Bearer $KEY" | jq -r .sessionId)
-curl -N $BASE/sessions/$SID/stream -H "Authorization: Bearer $KEY" &    # SSE 流式
+
+# 1) 先接 SSE（后台），逐 token 打印回答；turn_end 后服务端关流，这条命令自然退出
+curl -sN $BASE/sessions/$SID/stream -H "Authorization: Bearer $KEY" \
+  | awk '/^data: /{ sub(/^data: /, ""); print; fflush() }' \
+  | jq -j --unbuffered 'if .kind=="chunk" and .chunk.type=="text-delta" then .chunk.text else empty end' &
+
+# 2) 再发问
 curl -s -X POST $BASE/sessions/$SID/messages \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"content":"你好，介绍一下你自己"}'
+
+wait                                                          # 等 SSE 在 turn_end 后结束
+```
+
+不想流式、只要最终答案（发完问再轮询历史，什么时候接都行）：
+
+```bash
+until curl -s $BASE/sessions/$SID/history -H "Authorization: Bearer $KEY" \
+  | jq -e -r '[.events[] | select(.kind=="message")] | last | .text // empty'; do sleep 2; done
 ```
 
 Windows PowerShell（零依赖、UTF-8 安全）：
@@ -82,6 +97,31 @@ $json  = '{"content":"你好，介绍一下你自己"}'
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 Invoke-RestMethod -Method Post "$BASE/sessions/$SID/messages" `
   -Headers @{ Authorization = "Bearer $KEY" } -ContentType 'application/json; charset=utf-8' -Body $bytes
+
+# 取答案（简单法）：轮询历史，等本回合的完整回答
+do {
+  Start-Sleep -Seconds 2
+  $events = (Invoke-RestMethod "$BASE/sessions/$SID/history" -Headers @{ Authorization = "Bearer $KEY" }).events
+  $reply  = $events | Where-Object { $_.kind -eq 'message' } | Select-Object -Last 1
+} until ($reply)
+$reply.text          # 正式回答；$reply.reasoning 是思考过程
+```
+
+要逐 token 流式（先跑这段，再在另一个窗口发问；或把发问放到 `Start-Job` 里）：
+
+```powershell
+Add-Type -AssemblyName System.Net.Http                        # PowerShell 5.1 需要；7 可省
+$http = [System.Net.Http.HttpClient]::new()
+$http.Timeout = [TimeSpan]::FromMinutes(10)
+$http.DefaultRequestHeaders.Add('Authorization', "Bearer $KEY")
+$reader = [IO.StreamReader]::new($http.GetStreamAsync("$BASE/sessions/$SID/stream").Result, [Text.Encoding]::UTF8)
+while ($null -ne ($line = $reader.ReadLine())) {
+  if (-not $line.StartsWith('data: ')) { continue }
+  $e = $line.Substring(6) | ConvertFrom-Json
+  if ($e.kind -eq 'chunk' -and $e.chunk.type -eq 'text-delta') { Write-Host -NoNewline $e.chunk.text }
+  if ($e.kind -eq 'turn_end') { break }
+}
+$reader.Dispose(); $http.Dispose()
 ```
 
 > PowerShell 5.1 默认 ANSI/GBK 发中文会乱码：用上面的 UTF-8 字节写法（或声明 `charset=utf-8`）；PowerShell 7 默认 UTF-8 无此问题。服务端按 Content-Type 的 charset 解码（默认 UTF-8，兼容 GBK）。没有 `jq`？`brew install jq`，或用 Python/PowerShell 版。
@@ -97,11 +137,21 @@ key = httpx.post(f"{base}/key").json()["apiKey"]
 h = {"Authorization": f"Bearer {key}"}
 sid = httpx.post(f"{base}/sessions", headers=h).json()["sessionId"]
 httpx.post(f"{base}/sessions/{sid}/messages", headers=h, json={"content": "你好，介绍一下你自己"})
-with httpx.stream("GET", f"{base}/sessions/{sid}/stream", headers=h) as r:
+
+with httpx.stream("GET", f"{base}/sessions/{sid}/stream", headers=h, timeout=None) as r:
     for line in r.iter_lines():
-        if line.startswith("data: "):
-            print(json.loads(line[6:])["kind"])
+        if not line.startswith("data: "):
+            continue
+        e = json.loads(line[6:])
+        if e["kind"] == "chunk" and e["chunk"]["type"] == "text-delta":
+            print(e["chunk"]["text"], end="", flush=True)   # 逐 token
+        elif e["kind"] == "message":
+            answer = e["text"]                              # 整段正式回答
+        elif e["kind"] == "turn_end":
+            break
 ```
+
+> 接流时服务端先发 `hello` 回放已有历史，所以晚接一点不会丢内容；但**回合已经结束后**才接就等不到 `turn_end` 了，那种情况直接读 `GET /sessions/:id/history`。
 
 ## 端点
 

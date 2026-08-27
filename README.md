@@ -66,10 +66,26 @@ Every key has a schema default — see `examples/cordis.yml` for the annotated r
 BASE=http://127.0.0.1:3080/api-gw/v1
 KEY=$(curl -s -X POST $BASE/key | jq -r .apiKey)              # first call claims the key, once
 SID=$(curl -s -X POST $BASE/sessions -H "Authorization: Bearer $KEY" | jq -r .sessionId)
-curl -N $BASE/sessions/$SID/stream -H "Authorization: Bearer $KEY" &    # SSE
+
+# 1) attach the SSE stream first (background): prints the answer token by token,
+#    and exits on its own once the server closes the stream at turn_end
+curl -sN $BASE/sessions/$SID/stream -H "Authorization: Bearer $KEY" \
+  | awk '/^data: /{ sub(/^data: /, ""); print; fflush() }' \
+  | jq -j --unbuffered 'if .kind=="chunk" and .chunk.type=="text-delta" then .chunk.text else empty end' &
+
+# 2) then ask
 curl -s -X POST $BASE/sessions/$SID/messages \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"content":"你好，介绍一下你自己"}'
+
+wait                                                          # until SSE ends at turn_end
+```
+
+No streaming, just the final answer (poll the history after asking — attaching late is fine):
+
+```bash
+until curl -s $BASE/sessions/$SID/history -H "Authorization: Bearer $KEY" \
+  | jq -e -r '[.events[] | select(.kind=="message")] | last | .text // empty'; do sleep 2; done
 ```
 
 Windows PowerShell (no extra tools; UTF-8 safe):
@@ -82,6 +98,31 @@ $json  = '{"content":"你好，介绍一下你自己"}'
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 Invoke-RestMethod -Method Post "$BASE/sessions/$SID/messages" `
   -Headers @{ Authorization = "Bearer $KEY" } -ContentType 'application/json; charset=utf-8' -Body $bytes
+
+# Read the answer (simple way): poll the history until this turn produces a reply
+do {
+  Start-Sleep -Seconds 2
+  $events = (Invoke-RestMethod "$BASE/sessions/$SID/history" -Headers @{ Authorization = "Bearer $KEY" }).events
+  $reply  = $events | Where-Object { $_.kind -eq 'message' } | Select-Object -Last 1
+} until ($reply)
+$reply.text          # the answer; $reply.reasoning holds the thinking trace
+```
+
+Token-by-token instead (run this first, then ask from another window — or wrap the ask in `Start-Job`):
+
+```powershell
+Add-Type -AssemblyName System.Net.Http                        # needed on PowerShell 5.1, not on 7
+$http = [System.Net.Http.HttpClient]::new()
+$http.Timeout = [TimeSpan]::FromMinutes(10)
+$http.DefaultRequestHeaders.Add('Authorization', "Bearer $KEY")
+$reader = [IO.StreamReader]::new($http.GetStreamAsync("$BASE/sessions/$SID/stream").Result, [Text.Encoding]::UTF8)
+while ($null -ne ($line = $reader.ReadLine())) {
+  if (-not $line.StartsWith('data: ')) { continue }
+  $e = $line.Substring(6) | ConvertFrom-Json
+  if ($e.kind -eq 'chunk' -and $e.chunk.type -eq 'text-delta') { Write-Host -NoNewline $e.chunk.text }
+  if ($e.kind -eq 'turn_end') { break }
+}
+$reader.Dispose(); $http.Dispose()
 ```
 
 > PowerShell 5.1 sends ANSI/GBK by default → garbled Chinese. Use the UTF-8 byte form above (or declare `charset=utf-8`); PowerShell 7 is UTF-8 by default. The server honors the request `Content-Type` charset (default UTF-8, GBK-tolerant). No `jq`? `brew install jq`, or use the Python/PowerShell examples.
@@ -97,11 +138,21 @@ key = httpx.post(f"{base}/key").json()["apiKey"]
 h = {"Authorization": f"Bearer {key}"}
 sid = httpx.post(f"{base}/sessions", headers=h).json()["sessionId"]
 httpx.post(f"{base}/sessions/{sid}/messages", headers=h, json={"content": "你好，介绍一下你自己"})
-with httpx.stream("GET", f"{base}/sessions/{sid}/stream", headers=h) as r:
+
+with httpx.stream("GET", f"{base}/sessions/{sid}/stream", headers=h, timeout=None) as r:
     for line in r.iter_lines():
-        if line.startswith("data: "):
-            print(json.loads(line[6:])["kind"])
+        if not line.startswith("data: "):
+            continue
+        e = json.loads(line[6:])
+        if e["kind"] == "chunk" and e["chunk"]["type"] == "text-delta":
+            print(e["chunk"]["text"], end="", flush=True)   # token by token
+        elif e["kind"] == "message":
+            answer = e["text"]                              # the whole answer
+        elif e["kind"] == "turn_end":
+            break
 ```
+
+> On attach the server replays the existing history as `hello`, so attaching a little late loses nothing — but attaching **after the turn already ended** means no `turn_end` will arrive. Read `GET /sessions/:id/history` in that case.
 
 ## Endpoints
 
