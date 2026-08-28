@@ -62,96 +62,50 @@ dsh plugin --profile web add ./dsh-api-gateway-0.1.0.tgz
 
 ## 快速开始
 
+DSH 跑起来后，直接问 agent 一句话。脚本会自己领 key、建会话、发问并逐 token 打印回答：
+
+```bash
+./examples/ask.py "介绍一下你自己"        # 全平台，零依赖
+```
+
+```powershell
+.\examples\ask.ps1 "介绍一下你自己"       # Windows 原生，零依赖
+```
+
+不带问题就进交互模式（同一会话多轮问答）。`--help` 列出全部参数，常用的几个：
+
+| 参数 | 作用 |
+| --- | --- |
+| `-s <会话id>` | 接管已有会话——包括 GUI 里正开着的那个 |
+| `-l` | 列出网关能看到的所有会话 |
+| `--no-stream` | 不用 SSE，轮询拿最终答案 |
+| `-c <目录>` | 新会话的工作目录（决定归属工作区） |
+
+想直接看协议本身：
+
 ```bash
 BASE=http://127.0.0.1:3080/api-gw/v1
-KEY=$(curl -s -X POST $BASE/key | jq -r .apiKey)              # 首调领钥，仅一次有效
+KEY=$(curl -s -X POST $BASE/key | jq -r .apiKey)                       # 首调领钥，仅一次有效
 SID=$(curl -s -X POST $BASE/sessions -H "Authorization: Bearer $KEY" | jq -r .sessionId)
-
-# 1) 先接 SSE（后台），逐 token 打印回答；turn_end 后服务端关流，这条命令自然退出
-curl -sN $BASE/sessions/$SID/stream -H "Authorization: Bearer $KEY" \
-  | awk '/^data: /{ sub(/^data: /, ""); print; fflush() }' \
-  | jq -j --unbuffered 'if .kind=="chunk" and .chunk.type=="text-delta" then .chunk.text else empty end' &
-
-# 2) 再发问
-curl -s -X POST $BASE/sessions/$SID/messages \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"content":"你好，介绍一下你自己"}'
-
-wait                                                          # 等 SSE 在 turn_end 后结束
+curl -sN $BASE/sessions/$SID/stream -H "Authorization: Bearer $KEY" &   # 先接流，再发问
+curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{"content":"你好"}'          # 202 已受理
 ```
 
-不想流式、只要最终答案（发完问再轮询历史，什么时候接都行）：
+### 客户端示例
 
-```bash
-until curl -s $BASE/sessions/$SID/history -H "Authorization: Bearer $KEY" \
-  | jq -e -r '[.events[] | select(.kind=="message")] | last | .text // empty'; do sleep 2; done
-```
+三个可直接读的脚本，参数与行为完全一致：
 
-Windows PowerShell（零依赖、UTF-8 安全）：
+| 脚本 | 依赖 | 说明 |
+| --- | --- | --- |
+| `examples/ask.py` | Python 3.8+ | 只用标准库，参考实现 |
+| `examples/ask.ps1` | PowerShell 5.1+ | Windows 上 UTF-8 安全 |
+| `examples/ask.sh` | bash 4+、curl、jq | |
 
-```powershell
-$BASE = 'http://127.0.0.1:3080/api-gw/v1'
-$KEY  = (Invoke-RestMethod -Method Post "$BASE/key").apiKey
-$SID  = (Invoke-RestMethod -Method Post "$BASE/sessions" -Headers @{ Authorization = "Bearer $KEY" }).sessionId
-$json  = '{"content":"你好，介绍一下你自己"}'
-$bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-Invoke-RestMethod -Method Post "$BASE/sessions/$SID/messages" `
-  -Headers @{ Authorization = "Bearer $KEY" } -ContentType 'application/json; charset=utf-8' -Body $bytes
+它们处理好了两个手写片段最容易踩的点：
 
-# 取答案（简单法）：轮询历史，等本回合的完整回答
-do {
-  Start-Sleep -Seconds 2
-  $events = (Invoke-RestMethod "$BASE/sessions/$SID/history" -Headers @{ Authorization = "Bearer $KEY" }).events
-  $reply  = $events | Where-Object { $_.kind -eq 'message' } | Select-Object -Last 1
-} until ($reply)
-$reply.text          # 正式回答；$reply.reasoning 是思考过程
-```
-
-要逐 token 流式（先跑这段，再在另一个窗口发问；或把发问放到 `Start-Job` 里）：
-
-```powershell
-Add-Type -AssemblyName System.Net.Http                        # PowerShell 5.1 需要；7 可省
-$http = [System.Net.Http.HttpClient]::new()
-$http.Timeout = [TimeSpan]::FromMinutes(10)
-$http.DefaultRequestHeaders.Add('Authorization', "Bearer $KEY")
-$reader = [IO.StreamReader]::new($http.GetStreamAsync("$BASE/sessions/$SID/stream").Result, [Text.Encoding]::UTF8)
-while ($null -ne ($line = $reader.ReadLine())) {
-  if (-not $line.StartsWith('data: ')) { continue }
-  $e = $line.Substring(6) | ConvertFrom-Json
-  if ($e.kind -eq 'chunk' -and $e.chunk.type -eq 'text-delta') { Write-Host -NoNewline $e.chunk.text }
-  if ($e.kind -eq 'turn_end') { break }
-}
-$reader.Dispose(); $http.Dispose()
-```
-
-> PowerShell 5.1 默认 ANSI/GBK 发中文会乱码：用上面的 UTF-8 字节写法（或声明 `charset=utf-8`）；PowerShell 7 默认 UTF-8 无此问题。服务端按 Content-Type 的 charset 解码（默认 UTF-8，兼容 GBK）。没有 `jq`？`brew install jq`，或用 Python/PowerShell 版。
-
-> ⚠️ **Windows PowerShell 里不要用 `curl.exe -d '{"...":"..."}'` 内联 JSON**：PowerShell 5.1 向原生程序传参时会把内层双引号剥掉（实测 58 字节的 JSON 只发出 50 字节），服务端收到非法 JSON 返回 400，加上 `curl -s` 又看不到报错，看起来就像「请求卡死」。要么把 body 写文件后用 `--data-binary "@file"`，要么直接用上面的 Invoke-RestMethod（.NET 传参不受影响）。
-
-Python（httpx）：
-
-```python
-import httpx, json
-base = "http://127.0.0.1:3080/api-gw/v1"
-key = httpx.post(f"{base}/key").json()["apiKey"]
-h = {"Authorization": f"Bearer {key}"}
-sid = httpx.post(f"{base}/sessions", headers=h).json()["sessionId"]
-httpx.post(f"{base}/sessions/{sid}/messages", headers=h, json={"content": "你好，介绍一下你自己"})
-
-with httpx.stream("GET", f"{base}/sessions/{sid}/stream", headers=h, timeout=None) as r:
-    for line in r.iter_lines():
-        if not line.startswith("data: "):
-            continue
-        e = json.loads(line[6:])
-        if e["kind"] == "chunk" and e["chunk"]["type"] == "text-delta":
-            print(e["chunk"]["text"], end="", flush=True)   # 逐 token
-        elif e["kind"] == "message":
-            answer = e["text"]                              # 整段正式回答
-        elif e["kind"] == "turn_end":
-            break
-```
-
-> 接流时服务端先发 `hello` 回放已有历史，所以晚接一点不会丢内容；但**回合已经结束后**才接就等不到 `turn_end` 了，那种情况直接读 `GET /sessions/:id/history`。
+- **先接流再发问**：服务端在 `turn_end` 关流，回合结束后才接就永远等不到事件；提前接没有代价，首帧 `hello` 会回放已有历史。整个回合都错过了就直接读 `GET /sessions/:id/history`。
+- **声明 charset**：服务端按请求 `Content-Type` 的 charset 解码（默认 UTF-8，兼容 GBK）。否则 PowerShell 5.1 会按 ANSI/GBK 发出中文导致乱码；且 PowerShell 5.1 下 `curl.exe -d '{"a":"b"}'` 会丢掉内层引号（非法 JSON → 400，还被 `-s` 静默）。请发 UTF-8 字节，或用 `--data-binary "@file"`。
 
 ## 端点
 
