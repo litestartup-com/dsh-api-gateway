@@ -26,7 +26,7 @@ import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createRequire } from 'node:module'
 import z from '@deepseek-ai/schemastery'
-import { eventPayload, mapEvents, sseFrame, type GatewayEvent } from './events.js'
+import { eventPayload, mapEvents, normalizeUsage, sseFrame, sumUsage, type GatewayEvent, type TokenUsageJson } from './events.js'
 import { decodeBody, mapHeader, resolveCorsOrigin, routeSegments } from './http.js'
 
 /** Single source of truth for the version advertised by the service index. */
@@ -95,6 +95,8 @@ interface SessionEntry {
   workspace: { id: string; path: string; title: string } | null
   owned: boolean
   mode: 'created' | 'live' | 'resumed'
+  /** Steps of the turn in flight, summed for the `gateway/turn-end` total; reset at every turn end. */
+  turnUsage: TokenUsageJson | null
 }
 
 /** The subset of the dsh-agent Agent surface this plugin uses. */
@@ -282,10 +284,22 @@ export default {
       }
       writeToSubscribers(entry, sseFrame(payload))
       if (payload.kind === 'message') {
-        emitGatewayEvent('gateway/message', { sessionId: entry.agent.id, messageId: payload.messageId ?? null, text: payload.text ?? '' })
+        const usage = normalizeUsage(payload.usage)
+        entry.turnUsage = sumUsage(entry.turnUsage, usage)
+        emitGatewayEvent('gateway/message', { sessionId: entry.agent.id, messageId: payload.messageId ?? null, text: payload.text ?? '', usage })
       }
       if (payload.kind === 'turn_end') {
-        emitGatewayEvent('gateway/turn-end', { sessionId: entry.agent.id, turn: payload.turn ?? null, reason: payload.reason, detail: payload.detail ?? null })
+        const usage = entry.turnUsage
+        entry.turnUsage = null
+        emitGatewayEvent('gateway/turn-end', {
+          sessionId: entry.agent.id,
+          turn: payload.turn ?? null,
+          reason: payload.reason,
+          detail: payload.detail ?? null,
+          usage,
+          provider: entry.agent.options.provider ?? null,
+          model: entry.agent.options.model ?? null,
+        })
         for (const res of Array.from(entry.subscribers)) { try { res.end() } catch { /* noop */ } }
         entry.subscribers.clear()
         releasePump(entry)
@@ -460,6 +474,7 @@ export default {
 
     const makeEntry = (agent: AgentLike, owned: boolean, dispose: (() => Promise<void> | void) | null, mode: SessionEntry['mode'], workspace: SessionEntry['workspace']): SessionEntry => ({
       agent,
+      turnUsage: null,
       dispose: dispose ?? (() => {}),
       subscribers: new Set(),
       log: [],

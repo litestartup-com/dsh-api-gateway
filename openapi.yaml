@@ -119,7 +119,10 @@ paths:
             text/event-stream:
               schema:
                 type: string
-                description: 'data: JSON lines with kind: hello|user|chunk|message|tool_call|tool_result|turn_start|turn_end'
+                description: >-
+                  'data: ' JSON lines with kind: hello|user|chunk|message|tool_call|tool_result|turn_start|turn_end.
+                  A `message` frame carries `usage` when the adapter reported token accounting
+                  ({ inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?, reasoningTokens? }), else null.
   /api-gw/v1/sessions/discover:
     get:
       summary: List all sessions (id/title/cwd/live/persisted) — no content

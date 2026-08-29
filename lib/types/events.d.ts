@@ -11,6 +11,22 @@ export type GatewayEvent = {
     seq: number;
     [key: string]: unknown;
 };
+/**
+ * Token accounting for one assistant step, as the harness reports it on
+ * `assistant/message`. Counts are DISJOINT: `inputTokens` excludes cached
+ * input, which `cacheReadTokens` / `cacheWriteTokens` report separately.
+ */
+export interface TokenUsageJson {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    reasoningTokens?: number;
+}
+/** Copy the known counters as plain finite numbers; `null` when the adapter reported no accounting. */
+export declare const normalizeUsage: (usage: unknown) => TokenUsageJson | null;
+/** Accumulate step usage into a turn total. Absent counters stay absent unless one side reports them. */
+export declare const sumUsage: (total: TokenUsageJson | null, step: TokenUsageJson | null) => TokenUsageJson | null;
 /** Visible text and thinking content are split, never concatenated. */
 export declare const extractBlocks: (content: unknown) => {
     text: string;

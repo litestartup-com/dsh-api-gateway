@@ -211,8 +211,8 @@ DeepSeek Harness 官方另有 **Python SDK**（[快速上手](https://deepseek-h
 网关在 Cordis 事件总线上发布三个事件，其他宿主插件用 `ctx.on(...)` 订阅（监听器随 fiber 回收，异常不影响网关）：
 
 - `gateway/session-created` → `{ sessionId, mode: 'created' | 'live' | 'resumed', workspace, cwd }`
-- `gateway/message` → `{ sessionId, messageId, text }`（每条助手回复提交时）
-- `gateway/turn-end` → `{ sessionId, turn, reason, detail }`
+- `gateway/message` → `{ sessionId, messageId, text, usage }`（每条助手回复提交时；`usage` 为该步 token 用量，无则 `null`）
+- `gateway/turn-end` → `{ sessionId, turn, reason, detail, usage, provider, model }`（`usage` 为整回合各步之和，全程无上报则 `null`）
 
 典型用途：审计落盘、外部告警、转发 IM/Webhook、自定义限流旁路。
 

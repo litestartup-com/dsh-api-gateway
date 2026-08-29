@@ -6,7 +6,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chunkJson, eventPayload, extractBlocks, mapEvents, sseFrame } from '../lib/events.js'
+import { chunkJson, eventPayload, extractBlocks, mapEvents, normalizeUsage, sseFrame, sumUsage } from '../lib/events.js'
 
 test('extractBlocks splits text and reasoning, never concatenating them', () => {
   const content = [
@@ -59,8 +59,46 @@ test('eventPayload keeps reasoning out of the answer text', () => {
     },
   })
   assert.deepEqual(payload, {
-    kind: 'message', seq: 7, text: 'because', reasoning: 'why', usage: { inputTokens: 10 },
+    kind: 'message', seq: 7, text: 'because', reasoning: 'why', usage: { inputTokens: 10, outputTokens: 0 },
   })
+})
+
+test('normalizeUsage keeps the known counters and drops everything else', () => {
+  assert.deepEqual(normalizeUsage({
+    inputTokens: 10, outputTokens: 4, cacheReadTokens: 2, reasoningTokens: 1,
+    promptTokens: 999, nested: { live: true },
+  }), { inputTokens: 10, outputTokens: 4, cacheReadTokens: 2, reasoningTokens: 1 })
+  // A partial report still counts: the absent side is zero, not missing.
+  assert.deepEqual(normalizeUsage({ outputTokens: 7 }), { inputTokens: 0, outputTokens: 7 })
+})
+
+test('normalizeUsage returns null when no accounting was reported', () => {
+  for (const input of [null, undefined, 'x', 1, {}, { cacheReadTokens: 5 }, { inputTokens: 'many' }, { inputTokens: NaN }]) {
+    assert.equal(normalizeUsage(input), null)
+  }
+})
+
+test('sumUsage accumulates steps into a turn total', () => {
+  const first = normalizeUsage({ inputTokens: 10, outputTokens: 4, cacheReadTokens: 2 })
+  const second = normalizeUsage({ inputTokens: 5, outputTokens: 6, reasoningTokens: 3 })
+  assert.deepEqual(sumUsage(sumUsage(null, first), second), {
+    inputTokens: 15, outputTokens: 10, cacheReadTokens: 2, reasoningTokens: 3,
+  })
+})
+
+test('sumUsage leaves the total untouched for steps without accounting', () => {
+  const total = normalizeUsage({ inputTokens: 1, outputTokens: 2 })
+  assert.deepEqual(sumUsage(total, null), total)
+  assert.equal(sumUsage(null, null), null)
+  // The accumulator is never the same object as either input: it must stay JSON-safe to emit.
+  assert.notEqual(sumUsage(null, total), total)
+})
+
+test('chunkJson normalizes the usage chunk', () => {
+  assert.deepEqual(chunkJson({ type: 'usage', usage: { inputTokens: 3, outputTokens: 1, promptTokens: 9 } }), {
+    type: 'usage', usage: { inputTokens: 3, outputTokens: 1 },
+  })
+  assert.deepEqual(chunkJson({ type: 'usage' }), { type: 'usage', usage: null })
 })
 
 test('eventPayload reports null reasoning when the model did not think aloud', () => {

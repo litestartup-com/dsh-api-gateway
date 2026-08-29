@@ -213,8 +213,8 @@ Choose the SDK for disposable Python tasks; choose this gateway for everything t
 The gateway publishes three events on the Cordis event bus; other host plugins subscribe with `ctx.on(...)` (listeners are fiber-owned and can never break the gateway):
 
 - `gateway/session-created` → `{ sessionId, mode: 'created' | 'live' | 'resumed', workspace, cwd }`
-- `gateway/message` → `{ sessionId, messageId, text }` (on each committed assistant reply)
-- `gateway/turn-end` → `{ sessionId, turn, reason, detail }`
+- `gateway/message` → `{ sessionId, messageId, text, usage }` (on each committed assistant reply; `usage` is the step's token accounting or `null`)
+- `gateway/turn-end` → `{ sessionId, turn, reason, detail, usage, provider, model }` (`usage` is the turn total summed over its steps, `null` when no step reported accounting)
 
 Typical uses: audit persistence, external alerting, forwarding to IM/webhooks, custom rate-limit sidecars.
 
