@@ -17,6 +17,17 @@ const id = 'dsh-api-gateway'
 
 let src = readFileSync(file, 'utf8')
 
+// The factory receives only `require('react')` — there is no module resolver
+// behind it, so every client-only module has to be inlined here. Keep those
+// modules import-free for this reason, and fail loudly if the import shape
+// changes: a silently dropped inline would ship a card that throws on mount.
+const inline = (name) => {
+  const pattern = new RegExp(`^import [^\\n]*from ['"]\\./${name}\\.js['"];\\r?\\n`, 'm')
+  if (!pattern.test(src)) throw new Error(`wrap-client: no import of ./${name}.js found in lib/client.js`)
+  const body = readFileSync(join(root, 'lib', `${name}.js`), 'utf8').replace(/^export /gm, '')
+  src = src.replace(pattern, body)
+}
+
 // tsc emits ESM for client.tsx:
 //   import React from 'react';
 //   ... React.createElement(...) ...
@@ -24,6 +35,7 @@ let src = readFileSync(file, 'utf8')
 //   export function apply(ctx) { ... }
 // Rewrite those three surfaces into CJS factory form.
 src = src.replace(/^import React from ['"]react['"];\r?\n/m, '')
+inline('i18n')
 src = src.replace(/^export const inject = /m, 'const inject = ')
 src = src.replace(/^export function apply\(/m, 'function apply(')
 

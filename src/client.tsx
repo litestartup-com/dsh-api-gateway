@@ -24,10 +24,10 @@
  * that is not part of the settings document.
  */
 import React from 'react'
+import { dictFor, documentLanguages, type Dict, type FieldKey } from './i18n.js'
 
 const NS = 'dsh-api-gw'
 const CARD_TITLE = 'dsh-api-gw'
-const CARD_DESCRIPTION = 'REST + SSE 网关：第三方客户端创建会话、流式收包、接管 GUI 会话'
 const DEFAULT_PREFIX = '/api-gw/v1'
 
 interface GatewayConfig {
@@ -131,27 +131,27 @@ const ensureStyles = () => {
 type FieldKind = 'toggle' | 'number' | 'text' | 'select' | 'secret'
 
 interface Field {
-  key: string
-  label: string
-  hint: string
+  key: FieldKey
   kind: FieldKind
   options?: { value: string; label: string }[]
   placeholder?: string
 }
 
+// Shape only; the label and hint of each row come from the dictionary so the
+// card speaks the language of the surrounding app.
 const FIELDS: Field[] = [
-  { key: 'enabled', label: '启用网关', hint: '总开关（关闭后仅 /health 可达）', kind: 'toggle' },
-  { key: 'prefix', label: '路由前缀', hint: 'REST + SSE 的 URL 前缀（改动后立即重挂路由）', kind: 'text', placeholder: '/api-gw/v1' },
-  { key: 'maxSessions', label: '并发会话上限', hint: '网关持有的最大在线会话数', kind: 'number', placeholder: '20' },
-  { key: 'workspaceMode', label: '工作区模式', hint: 'auto=自动挂入工作区；ungrouped=不分组', kind: 'select', options: [{ value: 'auto', label: 'auto' }, { value: 'ungrouped', label: 'ungrouped' }] },
-  { key: 'defaultWorkspacePath', label: '默认工作区路径', hint: 'auto 模式下未给 cwd 时的归属目录', kind: 'text' },
-  { key: 'allowDiscover', label: '允许发现会话', hint: 'GET /sessions/discover', kind: 'toggle' },
-  { key: 'allowAdopt', label: '允许接管会话', hint: 'POST /sessions/:id/adopt', kind: 'toggle' },
-  { key: 'exposeErrors', label: '暴露错误详情', hint: '错误响应是否带内部信息', kind: 'toggle' },
-  { key: 'corsOrigin', label: 'CORS 来源', hint: "'*' 或具体域名", kind: 'text', placeholder: '*' },
-  { key: 'sseHeartbeatMs', label: 'SSE 心跳 (ms)', hint: '0 表示关闭', kind: 'number', placeholder: '30000' },
-  { key: 'bodyTimeoutMs', label: '请求体超时 (ms)', hint: '读取请求体超时', kind: 'number', placeholder: '30000' },
-  { key: 'adminKey', label: '管理密钥', hint: '只写不回显；留空表示不修改', kind: 'secret' },
+  { key: 'enabled', kind: 'toggle' },
+  { key: 'prefix', kind: 'text', placeholder: '/api-gw/v1' },
+  { key: 'maxSessions', kind: 'number', placeholder: '20' },
+  { key: 'workspaceMode', kind: 'select', options: [{ value: 'auto', label: 'auto' }, { value: 'ungrouped', label: 'ungrouped' }] },
+  { key: 'defaultWorkspacePath', kind: 'text' },
+  { key: 'allowDiscover', kind: 'toggle' },
+  { key: 'allowAdopt', kind: 'toggle' },
+  { key: 'exposeErrors', kind: 'toggle' },
+  { key: 'corsOrigin', kind: 'text', placeholder: '*' },
+  { key: 'sseHeartbeatMs', kind: 'number', placeholder: '30000' },
+  { key: 'bodyTimeoutMs', kind: 'number', placeholder: '30000' },
+  { key: 'adminKey', kind: 'secret' },
 ]
 
 const errText = (error: unknown) => String((error as { message?: unknown } | null)?.message ?? error)
@@ -159,6 +159,8 @@ const errText = (error: unknown) => String((error as { message?: unknown } | nul
 function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnapshot: () => any; scope: any }) {
   const { subscribe, getSnapshot, scope } = props
   const snap = React.useSyncExternalStore(subscribe, getSnapshot)
+  // Resolved once per mount: the page language does not change under the card.
+  const d: Dict = React.useMemo(() => dictFor(documentLanguages()), [])
   const value = (snap?.value ?? {}) as GatewayConfig
   const ready = snap?.status === 'ready'
   const writable = snap?.writable !== false
@@ -216,7 +218,7 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
       if (text === '') { await scope.unset(key); dropDraft(key); return }
       if (field.kind === 'number') {
         const n = Number(text)
-        if (!Number.isFinite(n)) { setError(`「${field.label}」需要数字`); return }
+        if (!Number.isFinite(n)) { setError(d.numberRequired(d.fields[field.key].label)); return }
         await scope.set(key, n)
       } else {
         await scope.set(key, text)
@@ -265,7 +267,7 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
       if (!r.ok) { setError(String(data?.error ?? r.status)); return }
       setFreshKey(data?.apiKey ?? null)
     } catch {
-      setError('轮换请求失败')
+      setError(d.rotateFailed)
     } finally {
       setRotating(false)
     }
@@ -273,7 +275,7 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
 
   const on = value.enabled === true
   const statusDot = ready ? (on ? '#16a34a' : 'var(--dsw-alias-label-error)') : 'var(--dsw-alias-label-dimmed)'
-  const statusText = !ready ? '加载中…' : on ? '已启用' : '已停用'
+  const statusText = !ready ? d.loading : on ? d.statusEnabled : d.statusDisabled
   const dirty = Object.keys(drafts).length > 0
 
   const chevron = React.createElement('svg', {
@@ -288,14 +290,14 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
     type: 'button',
     className: c.header,
     'aria-expanded': open,
-    'aria-label': `${open ? '折叠' : '展开'}：${CARD_TITLE}`,
+    'aria-label': `${open ? d.collapse : d.expand}: ${CARD_TITLE}`,
     onClick: () => setOpen(!open),
   },
     React.createElement('span', { className: c.headText },
       React.createElement('span', { className: c.name }, CARD_TITLE),
-      React.createElement('span', { className: c.description }, CARD_DESCRIPTION),
+      React.createElement('span', { className: c.description }, d.cardDescription),
     ),
-    dirty ? React.createElement('span', { className: c.pending }, '未保存') : null,
+    dirty ? React.createElement('span', { className: c.pending }, d.unsaved) : null,
     chevron,
   )
 
@@ -303,11 +305,11 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
     React.createElement('div', { className: c.status },
       React.createElement('span', { className: c.dot, style: { background: statusDot } }),
       React.createElement('span', null, statusText),
-      React.createElement('span', { className: c.muted }, `会话数 ${runtime?.sessions ?? 0}`),
-      React.createElement('span', { className: c.muted }, runtime?.apiKeySet === true ? '· API 密钥已发放' : '· 尚未发放 API 密钥'),
+      React.createElement('span', { className: c.muted }, d.sessionCount(runtime?.sessions ?? 0)),
+      React.createElement('span', { className: c.muted }, runtime?.apiKeySet === true ? d.keyProvisioned : d.keyMissing),
     ),
-    React.createElement('div', { className: c.mono }, `入口 ${prefix} · 流式 GET /sessions/:id/stream (SSE)`),
-    !writable ? React.createElement('p', { className: c.error, role: 'status' }, '设置文档只读，无法保存更改') : null,
+    React.createElement('div', { className: c.mono }, d.entry(prefix)),
+    !writable ? React.createElement('p', { className: c.error, role: 'status' }, d.readOnly) : null,
 
     ...FIELDS.filter((f) => f.kind === 'toggle').map((f) => {
       const checked = (value as any)[f.key] === true
@@ -316,26 +318,26 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
           type: 'checkbox', className: c.toggle, checked, disabled: !ready || !writable,
           onChange: (ev: React.ChangeEvent<HTMLInputElement>) => toggle(f.key, ev.target.checked),
         }),
-        React.createElement('span', { className: c.label }, f.label),
-        React.createElement('span', { className: c.hint }, f.hint),
+        React.createElement('span', { className: c.label }, d.fields[f.key].label),
+        React.createElement('span', { className: c.hint }, d.fields[f.key].hint),
       )
     }),
 
     ...FIELDS.filter((f) => f.kind === 'select').map((f) =>
       React.createElement('div', { key: f.key, className: c.field },
-        React.createElement('span', { className: c.label }, f.label),
+        React.createElement('span', { className: c.label }, d.fields[f.key].label),
         React.createElement('select', {
           className: c.input, disabled: !ready || !writable,
           value: String((value as any)[f.key] ?? 'auto'),
           onChange: (ev: React.ChangeEvent<HTMLSelectElement>) => select(f.key, ev.target.value),
         }, ...(f.options ?? []).map((o) => React.createElement('option', { key: o.value, value: o.value }, o.label))),
-        React.createElement('span', { className: c.hint }, f.hint),
+        React.createElement('span', { className: c.hint }, d.fields[f.key].hint),
       ),
     ),
 
     ...FIELDS.filter((f) => f.kind === 'text' || f.kind === 'number').map((f) =>
       React.createElement('div', { key: f.key, className: c.field },
-        React.createElement('span', { className: c.label }, f.label),
+        React.createElement('span', { className: c.label }, d.fields[f.key].label),
         React.createElement('input', {
           type: 'text', className: c.input,
           inputMode: f.kind === 'number' ? 'numeric' : undefined,
@@ -344,37 +346,37 @@ function GatewayCard(props: { subscribe: (cb: () => void) => () => void; getSnap
           value: drafts[f.key] !== undefined ? drafts[f.key] : formatValue(f),
           onChange: (ev: React.ChangeEvent<HTMLInputElement>) => setDraft(f.key, ev.target.value),
         }),
-        React.createElement('span', { className: c.hint }, f.hint),
+        React.createElement('span', { className: c.hint }, d.fields[f.key].hint),
       ),
     ),
 
     React.createElement('div', { className: c.field },
-      React.createElement('span', { className: c.label }, '管理密钥'),
+      React.createElement('span', { className: c.label }, d.fields.adminKey.label),
       React.createElement('input', {
-        type: 'password', className: c.input, placeholder: '留空不修改',
+        type: 'password', className: c.input, placeholder: d.adminKeyPlaceholder,
         disabled: !ready || !writable,
         value: draft('adminKey'),
         onChange: (ev: React.ChangeEvent<HTMLInputElement>) => setDraft('adminKey', ev.target.value),
       }),
-      React.createElement('span', { className: c.hint }, '只写不回显；用于 /admin/* 与轮换'),
+      React.createElement('span', { className: c.hint }, d.fields.adminKey.hint),
     ),
 
-    freshKey !== null ? React.createElement('div', { className: c.mono }, '新 API 密钥: ', freshKey) : null,
+    freshKey !== null ? React.createElement('div', { className: c.mono }, d.freshKey, freshKey) : null,
     error !== '' ? React.createElement('p', { className: c.error, role: 'status' }, error) : null,
 
     React.createElement('div', { className: c.footer },
       React.createElement('button', {
         type: 'button', className: c.ghost, disabled: rotating,
         onClick: () => void rotate(),
-      }, rotating ? '轮换中…' : '轮换 API 密钥'),
+      }, rotating ? d.rotating : d.rotate),
       React.createElement('button', {
         type: 'button', className: c.discard, disabled: !dirty || saving,
         onClick: discard,
-      }, '放弃更改'),
+      }, d.discard),
       React.createElement('button', {
         type: 'button', className: c.save, disabled: saving || !dirty || !ready || !writable,
         onClick: () => void saveAll(),
-      }, saving ? '保存中…' : '保存'),
+      }, saving ? d.saving : d.save),
     ),
   )
 

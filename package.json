@@ -42,7 +42,7 @@
     "build": "tsc -p tsconfig.json && node scripts/wrap-client.mjs",
     "watch": "tsc -p tsconfig.json --watch",
     "prepack": "tsc -p tsconfig.json && node scripts/wrap-client.mjs",
-    "test": "node --test test/events.test.mjs test/http.test.mjs",
+    "test": "node --test test/events.test.mjs test/http.test.mjs test/i18n.test.mjs",
     "smoke": "node scripts/smoke.mjs"
   },
   "dsh": {

@@ -11,7 +11,7 @@ dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 ## 特性
 
 - **REST + SSE**：9 个端点；token 级流式回包（`assistant/chunk`），`turn_end` 后服务端关流
-- **GUI 设置卡片**：设置 → 插件 → 可配置 → **dsh-api-gw**（默认折叠，右侧 chevron 展开；状态 / 软开关 / 密钥轮换）
+- **GUI 设置卡片**：设置 → 插件 → 可配置 → **dsh-api-gw**（默认折叠，右侧 chevron 展开；状态 / 软开关 / 密钥轮换）。默认英文，页面或浏览器语言为中文时自动切中文
 - **工作区归属**：API 会话落进真实工作区，侧边栏分组显示，不再进「未分组」
 - **会话发现与接管**：列出全部会话、只读任意会话完整历史、adopt 接管 GUI 会话继续对话——在线共驾或冷恢复，上下文无缝衔接
 - **reasoning 分离**：回复拆分为 `text`（正式回答）与 `reasoning`（思考过程），不再混装
