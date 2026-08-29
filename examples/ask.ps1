@@ -59,8 +59,15 @@ param(
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
+# Notices go to stderr so they never pollute a redirect. PowerShell's `>`
+# redirects the success stream, not the console, so streaming deltas (which must
+# be written without a trailing newline, i.e. straight to the console) cannot be
+# captured: when stdout is redirected we stream to stderr for the human and emit
+# the finished answer on the success stream for the pipe.
+$Redirected = [Console]::IsOutputRedirected
+
 function Write-Note([string] $Message) {
-  if (-not $Quiet) { Write-Host $Message -ForegroundColor DarkGray }
+  if (-not $Quiet) { [Console]::Error.WriteLine($Message) }
 }
 
 function Show-Usage {
@@ -153,24 +160,31 @@ function Invoke-StreamTurn {
     $stream = $http.GetStreamAsync("$Base/sessions/$SessionId/stream").GetAwaiter().GetResult()
     $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)
     Invoke-Gw -Method Post -Path "/sessions/$SessionId/messages" -Body @{ content = $Text } -ApiKey $ApiKey | Out-Null
+    $answer = ''
+    $live = if ($Redirected) { [Console]::Error } else { [Console]::Out }
     while ($null -ne ($line = $reader.ReadLine())) {
       if (-not $line.StartsWith('data: ')) { continue }   # `: ping` heartbeats
       $ev = $line.Substring(6) | ConvertFrom-Json
       switch ($ev.kind) {
         'chunk' {
-          if ($ev.chunk.type -eq 'text-delta') { Write-Host -NoNewline $ev.chunk.text }
-          elseif ($ev.chunk.type -eq 'reasoning-delta' -and $Reasoning) {
-            Write-Host -NoNewline $ev.chunk.text -ForegroundColor DarkGray
+          if ($ev.chunk.type -eq 'text-delta') {
+            $live.Write($ev.chunk.text)
+            $answer += $ev.chunk.text
+          } elseif ($ev.chunk.type -eq 'reasoning-delta' -and $Reasoning) {
+            [Console]::Error.Write($ev.chunk.text)
           }
         }
+        'message' { $answer = $ev.text }
         'turn_end' {
-          if ($ev.reason -ne 'completed') { Write-Note "`nturn ended: $($ev.reason) $($ev.detail)" }
-          Write-Host ''
+          $live.WriteLine()
+          if ($ev.reason -ne 'completed') { Write-Note "turn ended: $($ev.reason) $($ev.detail)" }
+          if ($Redirected) { Write-Output $answer }
           return
         }
       }
     }
-    Write-Host ''
+    $live.WriteLine()
+    if ($Redirected) { Write-Output $answer }
   } finally {
     if ($reader) { $reader.Dispose() }
     $http.Dispose()
@@ -184,12 +198,15 @@ function Get-HistoryMessages([string] $ApiKey, [string] $SessionId) {
 
 function Invoke-PollTurn {
   param([string] $ApiKey, [string] $SessionId, [string] $Text)
-  $seen = (Get-HistoryMessages $ApiKey $SessionId).Count
+  # Wrap every call in @(): PowerShell unrolls a one-element array returned from
+  # a function into a bare object, and `$object.Count` is $null on 5.1 — so the
+  # `-gt` below would silently compare $null and poll until the timeout.
+  $seen = @(Get-HistoryMessages $ApiKey $SessionId).Count
   Invoke-Gw -Method Post -Path "/sessions/$SessionId/messages" -Body @{ content = $Text } -ApiKey $ApiKey | Out-Null
   $deadline = (Get-Date).AddSeconds($Timeout)
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 2
-    $messages = Get-HistoryMessages $ApiKey $SessionId
+    $messages = @(Get-HistoryMessages $ApiKey $SessionId)
     if ($messages.Count -gt $seen) {
       $reply = $messages[-1]
       if ($Reasoning -and $reply.reasoning) { Write-Note $reply.reasoning }
@@ -229,13 +246,13 @@ try {
   }
   Write-Note 'interactive mode — empty line or Ctrl-C to quit'
   while ($true) {
-    if (-not $Quiet) { Write-Host -NoNewline '> ' }
+    if (-not $Quiet) { [Console]::Error.Write('> ') }
     $line = [Console]::In.ReadLine()
     if ($null -eq $line -or $line.Trim() -eq '') { exit 0 }
     Invoke-Turn $apiKey $sessionId $line
   }
 } catch {
-  Write-Host "ask.ps1: $($_.Exception.Message)" -ForegroundColor Red
+  [Console]::Error.WriteLine("ask.ps1: $($_.Exception.Message)")
   if ("$($_.Exception.Message)" -like 'no reply within*') { exit 2 }
   exit 1
 }
