@@ -79,6 +79,49 @@ const run = async () => {
   const discover = await request('/sessions/discover', { headers: auth })
   step('GET /sessions/discover', discover.status === 200 && Array.isArray(discover.body?.sessions))
 
+  // 7) release the slot. Exercised on a session that has a real transcript,
+  //    because "the history survives" is the invariant that matters.
+  const held = (await request('/health')).body?.sessions
+  const released = await request(`/sessions/${sessionId}`, { method: 'DELETE', headers: auth })
+  step(
+    'DELETE /sessions/:id',
+    released.status === 200 && released.body?.released === true && released.body?.disposed === true,
+    JSON.stringify(released.body),
+  )
+
+  const freed = (await request('/health')).body?.sessions
+  step(
+    'the slot is handed back',
+    typeof held === 'number' && typeof freed === 'number' && freed < held,
+    `sessions ${held} -> ${freed}`,
+  )
+
+  // 8) the two properties that make releasing safe rather than destructive.
+  const afterRelease = await request(`/sessions/${sessionId}/history`, { headers: auth })
+  const keptEvents = (afterRelease.body?.events ?? []).length
+  step(
+    'history survives the release',
+    afterRelease.status === 200 && keptEvents > 0 && afterRelease.body?.adopted === false,
+    `status=${afterRelease.status} events=${keptEvents} adopted=${afterRelease.body?.adopted}`,
+  )
+
+  const readopted = await request(`/sessions/${sessionId}/adopt`, { method: 'POST', headers: auth })
+  step(
+    'a released session can be adopted back',
+    readopted.status === 200 && (readopted.body?.history ?? []).length > 0,
+    `status=${readopted.status} mode=${readopted.body?.mode}`,
+  )
+
+  // 9) idempotent, and the script leaves no session behind -- this smoke used to
+  //    burn one slot of maxSessions on every run.
+  await request(`/sessions/${sessionId}`, { method: 'DELETE', headers: auth })
+  const again = await request(`/sessions/${sessionId}`, { method: 'DELETE', headers: auth })
+  step(
+    'releasing twice is not an error',
+    again.status === 200 && again.body?.released === false,
+    JSON.stringify(again.body),
+  )
+
   if (failures.length > 0) {
     console.error('\nSmoke failed:\n' + failures.map((f) => `  - ${f}`).join('\n'))
     process.exit(1)

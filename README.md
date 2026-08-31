@@ -10,12 +10,12 @@ dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 
 ## Features
 
-- **REST + SSE**: 9 endpoints; token-level streaming (`assistant/chunk`), server closes the stream at `turn_end`
+- **REST + SSE**: 10 endpoints; token-level streaming (`assistant/chunk`), server closes the stream at `turn_end`
 - **GUI settings card**: Settings → Plugins → Configurable → **dsh-api-gw** (collapsed by default, discloses via the chevron; status, soft on/off, key rotation). English by default, Chinese when the page or browser asks for it
 - **Workspace membership**: API sessions land in real workspaces and show grouped in the sidebar, never under "ungrouped"
 - **Session discovery & adoption**: list all sessions, read any session's full history (read-only), and adopt a GUI session to keep driving it over the API — live co-driving or cold resume with full context
 - **Reasoning split**: replies separate `text` (visible answer) from `reasoning` (thinking), never concatenated
-- **Extensible**: publishes `gateway/session-created` / `gateway/message` / `gateway/turn-end` on the Cordis event bus for other host plugins
+- **Extensible**: publishes `gateway/session-created` / `gateway/session-released` / `gateway/message` / `gateway/turn-end` on the Cordis event bus for other host plugins
 - **Any language client**: works from Linux/macOS/Windows, PowerShell included (UTF-8 aware, GBK-tolerant server side)
 
 ## Install
@@ -122,12 +122,34 @@ Two things they get right that ad-hoc snippets often don't:
 | GET | `/sessions/:id/stream` | API key | SSE: hello(replay)→chunk→message→tool_call/tool_result→turn_end |
 | GET | `/sessions/:id/history` | API key | Full history of **any** session (read-only) |
 | POST | `/sessions/:id/cancel` | API key | Cancel the active turn |
+| DELETE | `/sessions/:id` | API key | Release the session's `maxSessions` slot — **history is kept** |
 | POST | `/admin/enable` | Admin key | Runtime soft switch `{"enabled": bool}` |
 | POST | `/admin/rotate-key` | Admin key | Rotate the provisioned key |
 
 Auth headers, either form: `Authorization: Bearer <key>` (recommended, RFC 6750) or `X-API-Key: <key>`.
 
 Full spec: [openapi.yaml](./openapi.yaml).
+
+### Releasing sessions
+
+`maxSessions` caps how many sessions this gateway holds, and creation fails once the cap is reached. `DELETE /sessions/:id` gives a slot back, which matters for clients that open a session per task: without it a long-running deployment reaches the cap and then cannot create *or* adopt anything until the gateway is reloaded.
+
+What it does and does not do:
+
+| | |
+| --- | --- |
+| Frees the `maxSessions` slot | yes |
+| Ends open SSE streams for that session | yes |
+| Disposes the agent | only when this gateway owns it (`created` / `resumed`) |
+| Touches a co-driven GUI session (`live`) | **no** — it stops tracking, the Web UI keeps its session |
+| Deletes the transcript | **no** — `GET /sessions/:id/history` keeps working and `POST /sessions/:id/adopt` brings the session back |
+
+It is idempotent: releasing an unknown or already-released id answers `200` with `released: false`, so a client can call it unconditionally in a cleanup path. A turn still in flight is cancelled first.
+
+```jsonc
+// DELETE /api-gw/v1/sessions/<id>
+{ "ok": true, "sessionId": "...", "released": true, "disposed": true, "mode": "created", "historyRetained": true }
+```
 
 ## Security model
 

@@ -164,6 +164,47 @@ paths:
       responses:
         '200':
           description: history
+  /api-gw/v1/sessions/{id}:
+    delete:
+      summary: Release the session's maxSessions slot (history is retained)
+      description: >-
+        Removes the session from this gateway's registry, freeing a slot against
+        `maxSessions`. Open SSE streams are ended and an in-flight turn is
+        cancelled. The agent is disposed only for sessions this gateway owns
+        (`created` / `resumed`); a co-driven `live` GUI session is merely
+        untracked. The durable transcript is never deleted, so
+        `GET /sessions/{id}/history` keeps answering and
+        `POST /sessions/{id}/adopt` can take the session back. Idempotent.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: slot released, or already free
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  sessionId: { type: string }
+                  released:
+                    type: boolean
+                    description: false when the id was unknown or already released
+                  disposed:
+                    type: boolean
+                    description: whether the underlying agent was disposed (owned sessions only)
+                  mode:
+                    type: string
+                    enum: [created, live, resumed]
+                    description: absent when nothing was released
+                  historyRetained: { type: boolean, enum: [true] }
   /api-gw/v1/sessions/{id}/cancel:
     post:
       summary: Cancel the active turn

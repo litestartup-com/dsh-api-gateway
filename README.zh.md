@@ -10,12 +10,12 @@ dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 
 ## 特性
 
-- **REST + SSE**：9 个端点；token 级流式回包（`assistant/chunk`），`turn_end` 后服务端关流
+- **REST + SSE**：10 个端点；token 级流式回包（`assistant/chunk`），`turn_end` 后服务端关流
 - **GUI 设置卡片**：设置 → 插件 → 可配置 → **dsh-api-gw**（默认折叠，右侧 chevron 展开；状态 / 软开关 / 密钥轮换）。默认英文，页面或浏览器语言为中文时自动切中文
 - **工作区归属**：API 会话落进真实工作区，侧边栏分组显示，不再进「未分组」
 - **会话发现与接管**：列出全部会话、只读任意会话完整历史、adopt 接管 GUI 会话继续对话——在线共驾或冷恢复，上下文无缝衔接
 - **reasoning 分离**：回复拆分为 `text`（正式回答）与 `reasoning`（思考过程），不再混装
-- **可扩展**：在 Cordis 事件总线上发布 `gateway/session-created` / `gateway/message` / `gateway/turn-end`，供其他宿主插件订阅
+- **可扩展**：在 Cordis 事件总线上发布 `gateway/session-created` / `gateway/session-released` / `gateway/message` / `gateway/turn-end`，供其他宿主插件订阅
 - **任意语言客户端**：Linux/macOS/Windows 通吃（含 PowerShell；UTF-8 安全、服务端 GBK 兼容）
 
 ## 安装
@@ -120,12 +120,34 @@ curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
 | GET | `/sessions/:id/stream` | API Key | SSE：hello(回放)→chunk→message→tool_call/tool_result→turn_end |
 | GET | `/sessions/:id/history` | API Key | **任意**会话完整历史（只读） |
 | POST | `/sessions/:id/cancel` | API Key | 中止当前回合 |
+| DELETE | `/sessions/:id` | API Key | 归还该会话占用的 `maxSessions` 名额 —— **历史保留** |
 | POST | `/admin/enable` | Admin Key | 运行时软开关 `{"enabled": bool}` |
 | POST | `/admin/rotate-key` | Admin Key | 轮换密钥 |
 
 鉴权头二选一，等价：`Authorization: Bearer <key>`（推荐，RFC 6750）或 `X-API-Key: <key>`。
 
 完整规范：[openapi.yaml](./openapi.yaml)。
+
+### 归还会话名额
+
+`maxSessions` 限制网关同时持有的会话数，满了之后建会话会直接失败。`DELETE /sessions/:id` 把名额还回去。对「每个任务开一个会话」的客户端来说这是必需的：否则长期运行的部署迟早撞上限，此后既建不了新会话**也 adopt 不了旧会话**，只能重载网关。
+
+它做什么、不做什么：
+
+| | |
+| --- | --- |
+| 释放 `maxSessions` 名额 | 是 |
+| 关闭该会话上的 SSE 流 | 是 |
+| dispose 掉 agent | **仅当**网关持有它（`created` / `resumed`） |
+| 影响共驾的 GUI 会话（`live`） | **不会** —— 只解除跟踪，Web UI 那边照旧 |
+| 删除对话历史 | **不会** —— `GET /sessions/:id/history` 照样能读，`POST /sessions/:id/adopt` 能把会话拿回来 |
+
+幂等：对未知或已释放的 id 返回 `200` 且 `released: false`，所以客户端可以在清理路径里无条件调用。若回合仍在进行，先取消再释放。
+
+```jsonc
+// DELETE /api-gw/v1/sessions/<id>
+{ "ok": true, "sessionId": "...", "released": true, "disposed": true, "mode": "created", "historyRetained": true }
+```
 
 ## 安全模型
 

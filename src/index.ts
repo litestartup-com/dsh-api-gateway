@@ -191,7 +191,7 @@ export default {
       const { origin, vary } = resolveCorsOrigin(cfg.corsOrigin, requestOrigin)
       if (origin !== null) res.setHeader('Access-Control-Allow-Origin', origin)
       if (vary) res.setHeader('Vary', 'Origin')
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
       res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, x-api-key, x-admin-key')
       res.setHeader('Access-Control-Max-Age', '600')
     }
@@ -334,6 +334,38 @@ export default {
       if (entry.pollerDispose === null) return
       try { entry.pollerDispose() } catch { /* noop */ }
       entry.pollerDispose = null
+    }
+
+    /**
+     * Hand back one session's runtime footprint: subscribers, poll timer, the
+     * agent when this gateway owns it, and the `maxSessions` slot.
+     *
+     * `owned` decides whether the agent is disposed. A `live` entry is a GUI
+     * session this gateway only co-drives, so releasing it must stop tracking
+     * and nothing more -- disposing it would kill a session the user still has
+     * open in front of them.
+     *
+     * The durable session log is untouched either way: it lives in
+     * `sessionQuery`, so `GET /sessions/:id/history` keeps answering and
+     * `adopt` can bring the session back. Releasing frees a slot; it does not
+     * destroy a conversation.
+     *
+     * Emits nothing on its own -- the caller decides, so plugin teardown stays
+     * silent while an explicit DELETE announces itself on the bus.
+     */
+    const releaseSession = (sessionId: string, entry: SessionEntry): { disposed: boolean } => {
+      releasePump(entry)
+      for (const res of Array.from(entry.subscribers)) { try { res.end() } catch { /* noop */ } }
+      entry.subscribers.clear()
+      if (entry.owned) {
+        // Cancelled before disposal: a turn may still be in flight, and
+        // disposing alone would leave it burning tokens against a session no
+        // subscriber is left to read.
+        try { entry.agent.cancel({ kind: 'disposed' }) } catch { /* noop */ }
+        try { Promise.resolve(entry.dispose()).catch(() => {}) } catch { /* noop */ }
+      }
+      apiSessions.delete(sessionId)
+      return { disposed: entry.owned }
     }
 
     // Path A: live session/event listener; the pump (Path B) guarantees
@@ -629,6 +661,7 @@ export default {
             { method: 'GET', path: cfg.prefix + '/sessions/:id/stream', auth: true, note: 'SSE' },
             { method: 'GET', path: cfg.prefix + '/sessions/:id/history', auth: true },
             { method: 'POST', path: cfg.prefix + '/sessions/:id/cancel', auth: true },
+            { method: 'DELETE', path: cfg.prefix + '/sessions/:id', auth: true, note: 'frees the slot; history retained' },
           ],
         })
       }
@@ -797,6 +830,28 @@ export default {
         return sendJson(res, 200, { ok: true, sessionId: seg[1] })
       }
 
+      // Release the slot this session holds against `maxSessions`.
+      //
+      // The addressed collection is this gateway's registry, not the harness
+      // session store: POST /sessions adds an entry, this removes one. The
+      // durable transcript is not part of that resource and survives, so
+      // /history keeps answering and /adopt can take the session back.
+      if (seg.length === 2 && seg[0] === 'sessions' && req.method === 'DELETE') {
+        if (!requireAuth(req, res)) return
+        const entry = apiSessions.get(seg[1])
+        // Idempotent, deliberately unlike the 404 that /messages and /cancel
+        // answer. A caller releases in its cleanup path, where "the slot is
+        // already free" is the goal rather than a fault -- and after a gateway
+        // restart every id a client remembers is already gone.
+        if (entry === undefined) {
+          return sendJson(res, 200, { ok: true, sessionId: seg[1], released: false, disposed: false, historyRetained: true })
+        }
+        const mode = entry.mode
+        const { disposed } = releaseSession(seg[1], entry)
+        emitGatewayEvent('gateway/session-released', { sessionId: seg[1], mode, disposed })
+        return sendJson(res, 200, { ok: true, sessionId: seg[1], released: true, disposed, mode, historyRetained: true })
+      }
+
       return sendJson(res, 404, { error: 'not_found' })
     }
 
@@ -825,16 +880,8 @@ export default {
       mountRoute()
       return () => {
         if (disposeRoute !== null) { try { disposeRoute() } catch { /* noop */ } ; disposeRoute = null }
-        for (const entry of apiSessions.values()) {
-          releasePump(entry)
-          for (const r of Array.from(entry.subscribers)) { try { r.end() } catch { /* noop */ } }
-          entry.subscribers.clear()
-          if (entry.owned) {
-            try { entry.agent.cancel({ kind: 'disposed' }) } catch { /* noop */ }
-            try { Promise.resolve(entry.dispose()).catch(() => {}) } catch { /* noop */ }
-          }
-        }
-        apiSessions.clear()
+        // Snapshotted: releaseSession deletes from the map it is iterating.
+        for (const [sessionId, entry] of Array.from(apiSessions.entries())) releaseSession(sessionId, entry)
       }
     })
 
