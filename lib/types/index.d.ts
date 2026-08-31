@@ -52,6 +52,22 @@ export interface Config {
     corsOrigin: string | string[];
     /** Include internal error messages in HTTP responses (helpful locally, noisy publicly). */
     exposeErrors: boolean;
+    /**
+     * What happens when an agent this gateway drives asks an interactive question.
+     *
+     * - `conversation` (default) -- the question is handed back to the model with
+     *   instructions to ask in the reply and end the turn. An API client answers
+     *   it as an ordinary next message, so the turn closes on time and its cost
+     *   and duration stay meaningful.
+     * - `host` -- leave the question to whatever the deployment provides, i.e. the
+     *   Web GUI. Correct only when someone is actually watching that GUI: with no
+     *   answerer the turn blocks until it is cancelled.
+     *
+     * Approvals are deliberately NOT covered here. A question is the model's own
+     * choice and can be re-asked as text; an approval is raised by the runtime
+     * mid-tool-call, so there is nothing to reword and no way to defer it.
+     */
+    questionMode: 'conversation' | 'host';
     /** SSE heartbeat interval in ms; 0 disables. */
     sseHeartbeatMs: number;
     /** Request body read timeout in ms. */
@@ -71,6 +87,7 @@ export declare const Config: z<Schemastery.ObjectS<{
     allowAdopt: z<boolean, boolean>;
     corsOrigin: z<string | string[], string | string[]>;
     exposeErrors: z<boolean, boolean>;
+    questionMode: z<"conversation" | "host", "conversation" | "host">;
     sseHeartbeatMs: z<number, number>;
     bodyTimeoutMs: z<number, number>;
 }>, Schemastery.ObjectT<{
@@ -87,6 +104,7 @@ export declare const Config: z<Schemastery.ObjectS<{
     allowAdopt: z<boolean, boolean>;
     corsOrigin: z<string | string[], string | string[]>;
     exposeErrors: z<boolean, boolean>;
+    questionMode: z<"conversation" | "host", "conversation" | "host">;
     sseHeartbeatMs: z<number, number>;
     bodyTimeoutMs: z<number, number>;
 }>>;
@@ -106,6 +124,7 @@ declare const _default: {
         allowAdopt: z<boolean, boolean>;
         corsOrigin: z<string | string[], string | string[]>;
         exposeErrors: z<boolean, boolean>;
+        questionMode: z<"conversation" | "host", "conversation" | "host">;
         sseHeartbeatMs: z<number, number>;
         bodyTimeoutMs: z<number, number>;
     }>, Schemastery.ObjectT<{
@@ -122,6 +141,7 @@ declare const _default: {
         allowAdopt: z<boolean, boolean>;
         corsOrigin: z<string | string[], string | string[]>;
         exposeErrors: z<boolean, boolean>;
+        questionMode: z<"conversation" | "host", "conversation" | "host">;
         sseHeartbeatMs: z<number, number>;
         bodyTimeoutMs: z<number, number>;
     }>>;
