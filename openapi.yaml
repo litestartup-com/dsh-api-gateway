@@ -20,10 +20,17 @@ paths:
                   status: { type: string, enum: [ok, disabled] }
                   enabled: { type: boolean }
                   sessions: { type: integer }
-                  apiKeySet: { type: boolean }
+                  apiKeySet:
+                    type: boolean
+                    description: True when any key is accepted (apiKeys, provisionedKey, or an in-memory fallback).
   /api-gw/v1/key:
     post:
-      summary: One-time API key provisioning (first call only)
+      summary: One-time API key bootstrap (once ever, not once per restart)
+      description: >
+        Unauthenticated only while the deployment has no key at all: apiKeys empty
+        and provisionedKey unset. The minted key is persisted into the settings
+        scope before it is returned, so it survives restarts and this endpoint
+        refuses every later call.
       responses:
         '200':
           description: key issued
@@ -33,6 +40,29 @@ paths:
                 type: object
                 properties:
                   apiKey: { type: string }
+                  persisted:
+                    type: boolean
+                    description: False when no settings provider is available; the key is then in-memory and lost on restart.
+        '403':
+          description: >
+            key_already_provisioned (a key already exists, from apiKeys or a
+            previous mint) or key_provisioning_disabled (allowKeyProvision false).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, enum: [key_already_provisioned, key_provisioning_disabled] }
+                  hint: { type: string }
+        '500':
+          description: settings_update_failed — the key could not be persisted and was therefore not issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  detail: { type: string }
   /api-gw/v1/sessions:
     post:
       summary: Create a new agent session
@@ -242,6 +272,9 @@ paths:
   /api-gw/v1/admin/rotate-key:
     post:
       summary: Rotate the provisioned API key (admin key required)
+      description: >
+        Replaces provisionedKey and persists it. Static apiKeys are left
+        untouched: they are the operator's own list, not the gateway's to revoke.
       parameters:
         - in: header
           name: X-Admin-Key
@@ -250,3 +283,14 @@ paths:
       responses:
         '200':
           description: new key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey: { type: string }
+                  persisted: { type: boolean }
+        '401':
+          description: admin_unauthorized
+        '500':
+          description: settings_update_failed

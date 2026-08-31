@@ -45,7 +45,8 @@ The plugin is an ordinary Cordis row; you can also compose it by hand. It publis
     prefix: /api-gw/v1          # route prefix
     enabled: true               # master switch (also toggleable at runtime)
     apiKeys: []                 # pre-provisioned static API keys
-    allowKeyProvision: true     # one-time POST /key bootstrap
+    allowKeyProvision: true     # one-time POST /key bootstrap (only while no key exists)
+    # provisionedKey            # written by the gateway itself -- do not set by hand
     adminKey: change-me         # enables admin endpoints + card controls
     maxSessions: 20             # concurrent session cap
     workspaceMode: auto         # auto (join a workspace) | ungrouped
@@ -87,7 +88,7 @@ The raw protocol, if you'd rather see the wire:
 
 ```bash
 BASE=http://127.0.0.1:3080/api-gw/v1
-KEY=$(curl -s -X POST $BASE/key | jq -r .apiKey)                       # claims the key, once
+KEY=$(curl -s -X POST $BASE/key | jq -r .apiKey)                       # claimable once ever; the key itself is durable
 SID=$(curl -s -X POST $BASE/sessions -H "Authorization: Bearer $KEY" | jq -r .sessionId)
 curl -sN $BASE/sessions/$SID/stream -H "Authorization: Bearer $KEY" &   # attach before asking
 curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
@@ -114,7 +115,7 @@ Two things they get right that ad-hoc snippets often don't:
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | GET | `/health` | none | Status (reachable while disabled) |
-| POST | `/key` | first call only | One-time API key bootstrap |
+| POST | `/key` | first call only (no key set) | Bootstrap an API key; persisted, then closed for good |
 | POST | `/sessions` | API key | Create a session (`provider/model/maxTokens/cwd/workspace`) |
 | GET | `/sessions/discover` | API key | List sessions (id/title/cwd/live/persisted) — no content |
 | POST | `/sessions/:id/adopt` | API key | Adopt an existing session (`live` co-drive / `resumed` cold-resume); returns full history |
@@ -124,7 +125,7 @@ Two things they get right that ad-hoc snippets often don't:
 | POST | `/sessions/:id/cancel` | API key | Cancel the active turn |
 | DELETE | `/sessions/:id` | API key | Release the session's `maxSessions` slot — **history is kept** |
 | POST | `/admin/enable` | Admin key | Runtime soft switch `{"enabled": bool}` |
-| POST | `/admin/rotate-key` | Admin key | Rotate the provisioned key |
+| POST | `/admin/rotate-key` | Admin key | Rotate `provisionedKey` (leaves `apiKeys` untouched) |
 
 Auth headers, either form: `Authorization: Bearer <key>` (recommended, RFC 6750) or `X-API-Key: <key>`.
 
@@ -155,9 +156,15 @@ It is idempotent: releasing an unknown or already-released id answers `200` with
 
 **Why can `POST /key` just hand out a key?** It's a first-call bootstrap, not an open mint:
 
-- Only when **no key exists yet** does `POST /key` generate a 32-char random key — exactly once. Afterwards the endpoint is locked (401 without a valid key).
+- Only when **no key exists at all** (`apiKeys` empty **and** `provisionedKey` unset) does `POST /key` generate a 32-char random key.
+- The key is **persisted before it is returned**, into the settings scope as `provisionedKey`. So it keeps working across restarts, and the bootstrap closes **permanently** — every later call gets 403 `key_already_provisioned`. That is what "once" means here: **once ever**, not once per restart.
 - By default the gateway listens on loopback, so the only possible "first caller" is you, the deployer — equivalent to setting a password at first boot.
+- A deployment that configures `apiKeys` has the bootstrap closed from the start: configuring a key *is* having a key.
 - Don't trust the window? Close it: `allowKeyProvision: false`, keys only from `apiKeys: [...]`.
+- Rotate with `POST /admin/rotate-key` (needs `adminKey`). It replaces `provisionedKey` only and leaves `apiKeys` alone — that list is the operator's, and the gateway has no business revoking it.
+- Keys are **never logged**. To check whether a key is set, read `apiKeySet` from `GET /health`.
+
+> A deployment with no settings provider cannot persist anything, so it falls back to an in-memory key (lost on restart), reports `persisted: false`, and logs a warning. Such deployments should use `apiKeys` directly.
 
 Defense in depth (production checklist):
 

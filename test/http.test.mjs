@@ -4,7 +4,49 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { decodeBody, mapHeader, resolveCorsOrigin, routeSegments } from '../lib/http.js'
+import { decodeBody, mapHeader, provisionDecision, resolveCorsOrigin, routeSegments } from '../lib/http.js'
+
+const provision = (over = {}) => provisionDecision({
+  provisionedKey: undefined,
+  apiKeys: [],
+  allowKeyProvision: true,
+  prefix: '/api-gw/v1',
+  ...over,
+})
+
+test('provisionDecision mints only when the deployment has no key at all', () => {
+  assert.deepEqual(provision(), { action: 'mint' })
+  // Empty strings are not keys: a blank entry in the list must not be mistaken
+  // for a configured credential and lock the bootstrap out.
+  assert.deepEqual(provision({ apiKeys: ['', ''] }), { action: 'mint' })
+  assert.deepEqual(provision({ provisionedKey: '' }), { action: 'mint' })
+})
+
+test('provisionDecision refuses once a static key is configured', () => {
+  // The regression this exists for: an operator sets apiKeys, and an
+  // unauthenticated caller could still mint a second, equally powerful key.
+  const decision = provision({ apiKeys: ['operator-key'] })
+  assert.equal(decision.action, 'refuse')
+  assert.equal(decision.status, 403)
+  assert.equal(decision.error, 'key_already_provisioned')
+})
+
+test('provisionDecision stays closed after the first mint is persisted', () => {
+  // Persisted `provisionedKey` is what makes the bootstrap one-time *ever*
+  // rather than once per restart, so this is the check that the window does not
+  // reopen on the next boot.
+  const decision = provision({ provisionedKey: 'apigw-abc' })
+  assert.equal(decision.action, 'refuse')
+  assert.equal(decision.error, 'key_already_provisioned')
+  assert.match(decision.hint, /rotate-key/)
+})
+
+test('provisionDecision reports a disabled bootstrap distinctly from a used one', () => {
+  const decision = provision({ allowKeyProvision: false })
+  assert.equal(decision.action, 'refuse')
+  assert.equal(decision.status, 403)
+  assert.equal(decision.error, 'key_provisioning_disabled')
+})
 
 test('resolveCorsOrigin passes wildcard through without Vary', () => {
   assert.deepEqual(resolveCorsOrigin('*', 'https://a.example'), { origin: '*', vary: false })

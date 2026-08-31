@@ -56,6 +56,51 @@ export const decodeBody = (buf: Uint8Array, contentType: string | undefined): st
   return Buffer.from(buf).toString('utf8')
 }
 
+/**
+ * Whether `POST {prefix}/key` may still mint a key.
+ *
+ * The bootstrap is meant to be available only while the deployment has no key at
+ * all. An earlier version tested the in-memory provisioned key alone, which was
+ * wrong twice over: a deployment with `apiKeys` configured could still be talked
+ * into handing out an extra credential, and because the in-memory slot is empty
+ * again after every restart, the unauthenticated window reopened on each one
+ * instead of closing for good. So the predicate reads every source a key can
+ * come from, and `provisionedKey` is persisted by the caller precisely so that
+ * this returns `refuse` forever after the first mint.
+ */
+export type ProvisionDecision =
+  | { action: 'mint' }
+  | { action: 'refuse'; status: number; error: string; hint: string }
+
+export const provisionDecision = (input: {
+  provisionedKey: string | undefined
+  apiKeys: readonly string[]
+  allowKeyProvision: boolean
+  prefix: string
+}): ProvisionDecision => {
+  const configured = input.apiKeys.filter((k) => k !== '')
+  const provisioned = input.provisionedKey !== undefined && input.provisionedKey !== ''
+  if (provisioned || configured.length > 0) {
+    return {
+      action: 'refuse',
+      status: 403,
+      error: 'key_already_provisioned',
+      hint: provisioned
+        ? `A key was already provisioned. Rotate it with POST ${input.prefix}/admin/rotate-key (requires X-Admin-Key).`
+        : 'Static apiKeys are configured; authenticate with one of them.',
+    }
+  }
+  if (!input.allowKeyProvision) {
+    return {
+      action: 'refuse',
+      status: 403,
+      error: 'key_provisioning_disabled',
+      hint: 'Set config.apiKeys instead, or enable allowKeyProvision.',
+    }
+  }
+  return { action: 'mint' }
+}
+
 /** Project a persisted session header down to the wire shape. */
 export const mapHeader = (header: unknown): { id: string | null; title: string | null; cwd: string | null } => {
   const h = header as { id?: unknown; title?: unknown; cwd?: unknown } | null | undefined

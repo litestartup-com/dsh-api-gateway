@@ -27,7 +27,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createRequire } from 'node:module'
 import z from '@deepseek-ai/schemastery'
 import { eventPayload, mapEvents, normalizeUsage, sseFrame, sumUsage, type GatewayEvent, type TokenUsageJson } from './events.js'
-import { decodeBody, mapHeader, resolveCorsOrigin, routeSegments } from './http.js'
+import { decodeBody, mapHeader, provisionDecision, resolveCorsOrigin, routeSegments } from './http.js'
 
 /** Single source of truth for the version advertised by the service index. */
 const VERSION: string = (() => {
@@ -42,7 +42,16 @@ export interface Config {
   enabled: boolean
   /** Static API keys accepted by the gateway (in addition to the provisioned key). */
   apiKeys: string[]
-  /** Allow the one-time `POST {prefix}/key` bootstrap when no key exists. */
+  /**
+   * The key minted by `POST {prefix}/key`, persisted through the settings scope.
+   *
+   * Written by the gateway, not by hand -- `apiKeys` is the field to edit. It is
+   * stored rather than kept in memory so that the bootstrap is one-time *ever*:
+   * the key a client was given keeps working across restarts, and the
+   * unauthenticated mint closes permanently instead of reopening on each boot.
+   */
+  provisionedKey?: string
+  /** Allow the one-time `POST {prefix}/key` bootstrap when no key exists at all. */
   allowKeyProvision: boolean
   /** Admin key for `{prefix}/admin/*`; unset disables the admin surface. */
   adminKey?: string
@@ -70,6 +79,7 @@ export const Config = z.object({
   prefix: z.string().default('/api-gw/v1'),
   enabled: z.boolean().default(true),
   apiKeys: z.array(z.string().role('secret')).default([]),
+  provisionedKey: z.string().role('secret'),
   allowKeyProvision: z.boolean().default(true),
   adminKey: z.string().role('secret'),
   maxSessions: z.natural().default(20),
@@ -144,7 +154,13 @@ export default {
     // live from the settings namespace (settings integration) below.
     let cfg = config
     let settingsScope: { update: (patch: object) => Promise<void> } | null = null
-    let apiKey: string | null = null
+    /**
+     * Fallback home for a minted key when there is no settings provider to
+     * persist it in. A deployment without one cannot make the key durable, so it
+     * keeps the old in-memory behaviour and says so in the log; everywhere else
+     * `cfg.provisionedKey` is the real storage.
+     */
+    let volatileKey: string | null = null
     const apiSessions = new Map<string, SessionEntry>()
 
     // ---- primitives ----
@@ -239,10 +255,21 @@ export default {
       return header.slice(7).trim()
     }
 
+    /** Every key the deployment currently honours, from all three sources. */
+    const acceptedKeys = () => {
+      const keys = cfg.apiKeys.filter((key) => key !== '')
+      if (cfg.provisionedKey !== undefined && cfg.provisionedKey !== '') keys.push(cfg.provisionedKey)
+      if (volatileKey !== null) keys.push(volatileKey)
+      return keys
+    }
+
     const keyAccepted = (candidate: string | null) => {
       if (candidate === null || candidate === '') return false
-      if (apiKey !== null && safeEqual(candidate, apiKey)) return true
-      return cfg.apiKeys.some((key) => safeEqual(candidate, key))
+      // Every candidate is compared against every key rather than short-circuiting
+      // on the first match, so the work does not depend on which key was supplied.
+      let matched = false
+      for (const key of acceptedKeys()) if (safeEqual(candidate, key)) matched = true
+      return matched
     }
 
     const authorized = (req: IncomingMessage) => {
@@ -644,7 +671,7 @@ export default {
 
       // health stays reachable while disabled, for monitoring
       if (seg.length === 1 && seg[0] === 'health' && req.method === 'GET') {
-        return sendJson(res, 200, { status: cfg.enabled ? 'ok' : 'disabled', enabled: cfg.enabled, sessions: apiSessions.size, apiKeySet: apiKey !== null })
+        return sendJson(res, 200, { status: cfg.enabled ? 'ok' : 'disabled', enabled: cfg.enabled, sessions: apiSessions.size, apiKeySet: acceptedKeys().length > 0 })
       }
       if (!cfg.enabled) return sendJson(res, 503, { error: 'service_disabled' })
 
@@ -666,14 +693,49 @@ export default {
         })
       }
 
+      /**
+       * One-time bootstrap: mint the first key, then close for good.
+       *
+       * Unauthenticated *only* while the deployment has no key from any source --
+       * the single moment when there is no credential that could be demanded. The
+       * minted key is persisted before it is returned, so `provisionDecision`
+       * refuses every later call, including after a restart. A caller that
+       * already holds a key is refused too: it has nothing to learn here, and
+       * echoing a stored secret back over an authenticated request is a way to
+       * leak the *other* keys a deployment has.
+       */
       if (seg.length === 1 && seg[0] === 'key' && req.method === 'POST') {
-        if (apiKey !== null && !authorized(req)) return sendJson(res, 401, { error: 'unauthorized' })
-        if (apiKey === null) {
-          if (!cfg.allowKeyProvision) return sendJson(res, 403, { error: 'key provisioning disabled; use config.apiKeys' })
-          apiKey = randomToken('apigw-', 32)
-          ctx.logger?.info?.(`[dsh-api-gw] API key provisioned: ${apiKey}`)
+        const decision = provisionDecision({
+          provisionedKey: cfg.provisionedKey,
+          apiKeys: cfg.apiKeys,
+          allowKeyProvision: cfg.allowKeyProvision,
+          prefix: cfg.prefix,
+        })
+        if (decision.action === 'refuse') {
+          return sendJson(res, decision.status, { error: decision.error, hint: decision.hint })
         }
-        return sendJson(res, 200, { apiKey })
+
+        const minted = randomToken('apigw-', 32)
+        if (settingsScope !== null) {
+          try {
+            await settingsScope.update({ provisionedKey: minted })
+          } catch (error) {
+            // Reported rather than returned: handing out a key that silently did
+            // not persist is how the caller ends up with a credential that dies
+            // at the next restart without anyone knowing why.
+            return sendJson(res, 500, { error: 'settings_update_failed', detail: errorDetail(error) })
+          }
+          // The settings watcher refreshes `cfg` asynchronously; setting it here
+          // means the key works on the very next request either way.
+          cfg = { ...cfg, provisionedKey: minted }
+        } else {
+          volatileKey = minted
+          ctx.logger?.warn?.('[dsh-api-gw] no settings provider: the provisioned key is in memory only and will not survive a restart. Set config.apiKeys for a durable key.')
+        }
+        // Never logged: the log is the one place a secret leaks without anyone
+        // authenticating for it.
+        ctx.logger?.info?.('[dsh-api-gw] API key provisioned (one-time bootstrap now closed)')
+        return sendJson(res, 200, { apiKey: minted, persisted: settingsScope !== null })
       }
 
       // Admin surface (X-Admin-Key): runtime master switch + key rotation.
@@ -698,11 +760,24 @@ export default {
         }
         return sendJson(res, 200, { enabled: cfg.enabled, sessions: apiSessions.size })
       }
+      // Replaces the provisioned key only. `apiKeys` is the operator's own list
+      // and rotating over it would silently revoke keys the gateway was never
+      // asked to manage.
       if (seg.length === 2 && seg[0] === 'admin' && seg[1] === 'rotate-key' && req.method === 'POST') {
         if (!isAdmin(req)) return sendJson(res, 401, { error: 'admin_unauthorized' })
-        apiKey = randomToken('apigw-', 32)
-        ctx.logger?.info?.(`[dsh-api-gw] API key rotated: ${apiKey}`)
-        return sendJson(res, 200, { apiKey })
+        const minted = randomToken('apigw-', 32)
+        if (settingsScope !== null) {
+          try {
+            await settingsScope.update({ provisionedKey: minted })
+          } catch (error) {
+            return sendJson(res, 500, { error: 'settings_update_failed', detail: errorDetail(error) })
+          }
+          cfg = { ...cfg, provisionedKey: minted }
+        } else {
+          volatileKey = minted
+        }
+        ctx.logger?.info?.('[dsh-api-gw] API key rotated')
+        return sendJson(res, 200, { apiKey: minted, persisted: settingsScope !== null })
       }
 
       if (seg.length === 1 && seg[0] === 'sessions' && req.method === 'POST') {

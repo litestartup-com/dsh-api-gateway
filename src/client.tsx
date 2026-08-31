@@ -18,10 +18,11 @@
  * Host has no stake in. Staged edits outlive collapsing, so the header marks a
  * card holding unsaved edits.
  *
- * Runtime-only state (live session count, whether a provisioned API key exists)
- * still comes from the gateway's own `GET /health`; key rotation still goes
- * through `POST /admin/rotate-key` because that provisions an in-memory key
- * that is not part of the settings document.
+ * Runtime-only state (live session count, whether any API key is set) still comes
+ * from the gateway's own `GET /health`; key rotation still goes through
+ * `POST /admin/rotate-key` rather than the settings document, because minting a
+ * secret is an action with one-shot output -- the new key is shown once and the
+ * stored field stays redacted, so it is not an editable form row.
  */
 import React from 'react'
 import { dictFor, documentLanguages, type Dict, type FieldKey } from './i18n.js'

@@ -45,7 +45,8 @@ dsh plugin --profile web add ./dsh-api-gateway-0.1.0.tgz
     prefix: /api-gw/v1          # 路由前缀
     enabled: true               # 主开关（也可运行时软开关）
     apiKeys: []                 # 预置静态 API 密钥
-    allowKeyProvision: true     # 首调 POST /key 自助发钥
+    allowKeyProvision: true     # 首调 POST /key 自助发钥（仅当一把密钥都没有时）
+    # provisionedKey            # 由网关自己写入，不要手填；见「安全模型」
     adminKey: change-me         # 启用 admin 端点与卡片控件
     maxSessions: 20             # 并发会话上限
     workspaceMode: auto         # auto（默认，自动挂入工作区）/ ungrouped
@@ -85,7 +86,7 @@ DSH 跑起来后，直接问 agent 一句话。脚本会自己领 key、建会�
 
 ```bash
 BASE=http://127.0.0.1:3080/api-gw/v1
-KEY=$(curl -s -X POST $BASE/key | jq -r .apiKey)                       # 首调领钥，仅一次有效
+KEY=$(curl -s -X POST $BASE/key | jq -r .apiKey)                       # 引导领钥，一辈子只能领一次（密钥本身长期有效）
 SID=$(curl -s -X POST $BASE/sessions -H "Authorization: Bearer $KEY" | jq -r .sessionId)
 curl -sN $BASE/sessions/$SID/stream -H "Authorization: Bearer $KEY" &   # 先接流，再发问
 curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
@@ -112,7 +113,7 @@ curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/health` | 无 | 状态（停用时仍可访问） |
-| POST | `/key` | 首次调用 | 一次性发放 API 密钥 |
+| POST | `/key` | 仅首次（无密钥时） | 引导发放 API 密钥，落盘后永久关闭 |
 | POST | `/sessions` | API Key | 创建会话（`provider/model/maxTokens/cwd/workspace`） |
 | GET | `/sessions/discover` | API Key | 会话清单（id/title/cwd/live/persisted），不含内容 |
 | POST | `/sessions/:id/adopt` | API Key | 接管会话（`live` 共驾 / `resumed` 冷恢复），返回完整历史 |
@@ -122,7 +123,7 @@ curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
 | POST | `/sessions/:id/cancel` | API Key | 中止当前回合 |
 | DELETE | `/sessions/:id` | API Key | 归还该会话占用的 `maxSessions` 名额 —— **历史保留** |
 | POST | `/admin/enable` | Admin Key | 运行时软开关 `{"enabled": bool}` |
-| POST | `/admin/rotate-key` | Admin Key | 轮换密钥 |
+| POST | `/admin/rotate-key` | Admin Key | 轮换 `provisionedKey`（不影响 `apiKeys`） |
 
 鉴权头二选一，等价：`Authorization: Bearer <key>`（推荐，RFC 6750）或 `X-API-Key: <key>`。
 
@@ -153,9 +154,15 @@ curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
 
 **`POST /key` 为什么能直接领到密钥？** 它是"首次调用引导"，不是常开的发钥匙口：
 
-- 仅当**尚无任何密钥**时，`POST /key` 才生成一枚 32 位随机密钥——**仅一次有效**；此后该端点锁死（无钥 401）。
+- 仅当**一把密钥都没有**（`apiKeys` 为空**且** `provisionedKey` 未设）时，`POST /key` 才生成一枚 32 位随机密钥。
+- 新密钥**先落盘再返回**：写入 settings 作用域的 `provisionedKey`，所以它跨重启一直有效，而这个引导入口从此**永久关闭**（后续任何调用一律 403 `key_already_provisioned`）。这是「仅一次」的真正含义——**一辈子一次**，不是每次重启一次。
 - 默认网关挂回环地址，第一个触达者只可能是部署者本人——等价于首次开机设密码。
+- 已配 `apiKeys` 的部署，这个入口一开始就是关的：配置本身就意味着「已有密钥」。
 - 不信任这个窗口就焊死：`allowKeyProvision: false`，密钥只从 `apiKeys: [...]` 预置。
+- 轮换用 `POST /admin/rotate-key`（需 `adminKey`），它只替换 `provisionedKey`，**不动** `apiKeys`——那是运维自己的清单，网关无权吊销。
+- 密钥**不写日志**。想确认是否已有密钥，看 `GET /health` 的 `apiKeySet`。
+
+> 无 settings provider 的部署无法落盘，此时回落为内存密钥（重启失效），响应里 `persisted: false`，日志给出 warning。这类部署应直接用 `apiKeys`。
 
 纵深（生产清单）：
 
