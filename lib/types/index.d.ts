@@ -25,7 +25,16 @@ export interface Config {
     enabled: boolean;
     /** Static API keys accepted by the gateway (in addition to the provisioned key). */
     apiKeys: string[];
-    /** Allow the one-time `POST {prefix}/key` bootstrap when no key exists. */
+    /**
+     * The key minted by `POST {prefix}/key`, persisted through the settings scope.
+     *
+     * Written by the gateway, not by hand -- `apiKeys` is the field to edit. It is
+     * stored rather than kept in memory so that the bootstrap is one-time *ever*:
+     * the key a client was given keeps working across restarts, and the
+     * unauthenticated mint closes permanently instead of reopening on each boot.
+     */
+    provisionedKey?: string;
+    /** Allow the one-time `POST {prefix}/key` bootstrap when no key exists at all. */
     allowKeyProvision: boolean;
     /** Admin key for `{prefix}/admin/*`; unset disables the admin surface. */
     adminKey?: string;
@@ -52,6 +61,7 @@ export declare const Config: z<Schemastery.ObjectS<{
     prefix: z<string, string>;
     enabled: z<boolean, boolean>;
     apiKeys: z<string[], string[]>;
+    provisionedKey: z<string, string>;
     allowKeyProvision: z<boolean, boolean>;
     adminKey: z<string, string>;
     maxSessions: z<number, number>;
@@ -67,6 +77,7 @@ export declare const Config: z<Schemastery.ObjectS<{
     prefix: z<string, string>;
     enabled: z<boolean, boolean>;
     apiKeys: z<string[], string[]>;
+    provisionedKey: z<string, string>;
     allowKeyProvision: z<boolean, boolean>;
     adminKey: z<string, string>;
     maxSessions: z<number, number>;
@@ -85,6 +96,7 @@ declare const _default: {
         prefix: z<string, string>;
         enabled: z<boolean, boolean>;
         apiKeys: z<string[], string[]>;
+        provisionedKey: z<string, string>;
         allowKeyProvision: z<boolean, boolean>;
         adminKey: z<string, string>;
         maxSessions: z<number, number>;
@@ -100,6 +112,7 @@ declare const _default: {
         prefix: z<string, string>;
         enabled: z<boolean, boolean>;
         apiKeys: z<string[], string[]>;
+        provisionedKey: z<string, string>;
         allowKeyProvision: z<boolean, boolean>;
         adminKey: z<string, string>;
         maxSessions: z<number, number>;
