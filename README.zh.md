@@ -55,6 +55,7 @@ dsh plugin --profile web add ./dsh-api-gateway-0.1.0.tgz
     allowAdopt: true            # POST /sessions/:id/adopt
     corsOrigin: '*'             # '*' 或具体域/列表（列表按请求 Origin 匹配回显）
     exposeErrors: true          # 错误响应是否带内部细节
+    questionMode: conversation  # conversation（写进回复里问）| host（交给 GUI）
     sseHeartbeatMs: 30000       # SSE 心跳间隔（0 关闭）
     bodyTimeoutMs: 30000        # 请求体读取超时
 ```
@@ -118,7 +119,7 @@ curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
 | GET | `/sessions/discover` | API Key | 会话清单（id/title/cwd/live/persisted），不含内容 |
 | POST | `/sessions/:id/adopt` | API Key | 接管会话（`live` 共驾 / `resumed` 冷恢复），返回完整历史 |
 | POST | `/sessions/:id/messages` | API Key | 发消息（字符串或块数组） |
-| GET | `/sessions/:id/stream` | API Key | SSE：hello(回放)→chunk→message→tool_call/tool_result→turn_end |
+| GET | `/sessions/:id/stream` | API Key | SSE：hello(回放)→chunk→message→tool_call/tool_result→approval_asked/approval_decided→turn_end |
 | GET | `/sessions/:id/history` | API Key | **任意**会话完整历史（只读） |
 | POST | `/sessions/:id/cancel` | API Key | 中止当前回合 |
 | DELETE | `/sessions/:id` | API Key | 归还该会话占用的 `maxSessions` 名额 —— **历史保留** |
@@ -149,6 +150,38 @@ curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
 // DELETE /api-gw/v1/sessions/<id>
 { "ok": true, "sessionId": "...", "released": true, "disposed": true, "mode": "created", "historyRetained": true }
 ```
+
+## 互动式询问（提问与授权）
+
+Harness 的 agent 有两种停下来等人的方式，而它们不是同一个问题。网关有意分开处理。
+
+### 提问降级为对话
+
+`ask_user_question` 工具会把工具调用挂住，直到有人在 Web GUI 里点那张卡片。对一个由 API 驱动的会话，那张卡片**无人可答**：回合会一直挂到被取消，它的耗时和成本就失去了意义，而无人值守的客户端（cron、CI、IM 桥）直接停死。
+
+所以 `questionMode: conversation`（默认）给网关自有的会话装上一个 provider，把问题**交回给模型**，并告诉它：把问题写进回复，结束本回合。客户端用一次普通的 `POST /sessions/:id/messages` 就把它答了。没有新端点、没有协议状态、没有被挂住的回合——而且问题、答案、成本都像普通对话一样落在转录里。
+
+```jsonc
+// 客户端看到的：一次失败的工具调用带着那句指示，紧接着一条普通回复
+{ "kind": "tool_result", "isError": true, "text": "This session is driven remotely through the API gateway…" }
+{ "kind": "message", "text": "这里两个选择：（1）保留旧记录，（2）删掉。你选哪个？" }
+```
+
+只对**网关自己创建或恢复的会话**生效。共驾的 GUI 会话（`live`）保留部署自己的 provider：那边确实有人在看浏览器，抢走他的卡片比不接更糟。想完全不用这个行为：`questionMode: host`。
+
+> 一个很容易做错的实现细节：provider 槽位是单一字段，重复注册会抛 `DUPLICATE_PROVIDER`，所以网关**不会**跟 GUI 并列注册。它取一个私有服务作用域（`ctx.isolate`）在里面注册，宿主的槽位一字未动。`test/questions.test.mjs` 拿真实的包钉住了这两半。
+
+### 授权：看得见，还不能应答
+
+授权请求是**运行时在工具调用中途发起**的，不是模型自己选的——没什么可以重措辞，也无处推迟。它无法降级为对话，所以网关改为转发它的审计链：
+
+| 帧 | 含义 |
+| --- | --- |
+| `approval_asked` | `{ id, toolName, callId, reason }` —— 回合是**停住了**，不是在慢 |
+| `approval_decided` | `{ id, outcome }` —— `allowed-once` / `rejected` / `cancelled` / `unavailable` |
+| `approval_policy` | `{ policy, source }` —— 本会话的 `ask` 或 `never` |
+
+这堤上了最坏的那个缺口：在 API 上看，一个被授权卡住的回合和一个在思考的回合原本完全一模一样。但它不让 API 客户端*做决定*：没有应答者时适用部署的 fail-closed 默认值，结果是 `unavailable`。在可应答（v0.2.0）之前，纯 API 部署只有两个诚实的选择：盯着 GUI 去答，或者跑在 `policy: never` 下接受确定性拒绝。
 
 ## 安全模型
 
@@ -230,7 +263,7 @@ DeepSeek Harness 官方另有 **Python SDK**（[快速上手](https://deepseek-h
 | 会话 | `session_root` 下私有 JSONL，与部署/GUI 无关 | 部署共享会话库：GUI 可见、工作区分组、可接管 |
 | 能力面 | 默认组合极简（本地 bash 等，无 skills、无压缩；可 `cordis` 定制） | 部署默认 agent preset 全部能力（工具/技能/沙箱策略） |
 | 平台 | Linux x64/arm64、macOS 14+ arm64；**不支持 Windows** | 客户端任意语言/平台（含 Windows PowerShell） |
-| 隔离性 | `danger-full-access`，仅建议容器/可丢弃环境 | 继承部署沙箱与审批策略 |
+| 隔离性 | `danger-full-access`，仅建议容器/可丢弃环境 | 继承部署沙箱与审批策略（询问以审计帧转发；可应答在 v0.2.0） |
 | 典型场景 | Python 脚本跑**一次性隔离任务**，无长期部署 | 第三方连接**你正在运行的部署**：跨语言、统一鉴权限流审计、续聊 UI 会话 |
 
 一次性 Python 任务 → 官方 SDK；持续部署、跨语言、续聊 UI 会话 → 本网关。**别混用**：DeepSeek 的 `sk-…` 密钥打不开本网关；`pip install deepseek-harness-sdk` 也连不上本网关。
@@ -262,9 +295,9 @@ pnpm smoke        # 对运行中的网关跑端到端冒烟
 | 版本 | 主题 | 内容 |
 | --- | --- | --- |
 | **v0.1.0** | 基线（当前） | REST+SSE、设置卡片、reasoning/text 分离、工作区归属、会话接管、跨平台文档 |
-| **v0.2.0** | 多租户安全 ★ | 多密钥 CRUD/吊销、按密钥限流（429 + `Retry-After`）、**工作区模型：每密钥独立 + 共享协作（`shared`/`isolated`）**、按密钥审批策略、审计（每密钥请求/会话/token 用量）、会话持久化（重启恢复） |
+| **v0.2.0** | 多租户安全 ★ | 多密钥 CRUD/吊销、按密钥限流（429 + `Retry-After`）、**工作区模型：每密钥独立 + 共享协作（`shared`/`isolated`）**、按密钥审批策略**与通过 API 应答授权**（`approval_request` 帧 + 决定端点）、审计（每密钥请求/会话/token 用量）、会话持久化（重启恢复） |
 | **v0.3.0** | 管理界面 | 完整 admin 设置页（密钥/限额/工作区绑定、会话监控、用量审计、软开关）+ typert `@Remote` 配置面 + per-key preset 选择 |
-| **v0.4.0** | 双工流式 | `webServer.registerUpgrade` WebSocket 全双工；SSE 保留为轻量选项 |
+| **v0.4.0** | 双工流式 | `webServer.registerUpgrade` WebSocket 全双工；SSE 保留为轻量选项；**可选开启的互动问答卡片中继**（含 `plan-review`——它的裁决是机器可读的，是文本唯一无法替代的那个场景），面向富交互客户端——有状态双向流程属于双工，不属于 SSE |
 | **v0.5.0** | 生态与运维 | Python/Node HTTP 薄客户端（OpenAPI 生成——**不是**官方嵌入式 SDK，见上文）、部署指南（反代+TLS、Docker Compose）、指标/遥测导出、OpenAPI 生成进 CI |
 
 **不做/缓做**：多进程横向扩展、内置 TLS 终止（反代职责）、OAuth/OIDC（按密钥模型稳定后再议）。

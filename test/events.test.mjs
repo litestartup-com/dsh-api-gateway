@@ -147,6 +147,37 @@ test('eventPayload surfaces turn end reasons with detail', () => {
   assert.equal(eventPayload({ type: 'turn/end', seq: 12, data: {} }).reason, 'unknown')
 })
 
+test('eventPayload relays the approval audit pair', () => {
+  assert.deepEqual(eventPayload({
+    type: 'approval/asked', seq: 13,
+    data: { id: 'ap1', toolName: 'write_file', callId: 'c9', reason: 'writes outside the workspace' },
+  }), {
+    kind: 'approval_asked', seq: 13, id: 'ap1', toolName: 'write_file', callId: 'c9',
+    reason: 'writes outside the workspace',
+  })
+  // The optional halves are absent, not empty strings: a client renders a
+  // missing reason differently from a blank one.
+  assert.deepEqual(eventPayload({ type: 'approval/asked', seq: 14, data: { id: 'ap2', toolName: 'bash' } }), {
+    kind: 'approval_asked', seq: 14, id: 'ap2', toolName: 'bash', callId: null, reason: null,
+  })
+  assert.deepEqual(eventPayload({ type: 'approval/decided', seq: 15, data: { id: 'ap1', outcome: 'allowed-once' } }), {
+    kind: 'approval_decided', seq: 15, id: 'ap1', outcome: 'allowed-once',
+  })
+  // 'unavailable' is the fail-closed outcome of a deployment with no answerer --
+  // the one an API-driven session hits, so it must survive the mapping verbatim.
+  assert.equal(eventPayload({ type: 'approval/decided', seq: 16, data: { id: 'ap2', outcome: 'unavailable' } }).outcome, 'unavailable')
+  assert.equal(eventPayload({ type: 'approval/decided', seq: 17, data: {} }).outcome, 'unknown')
+})
+
+test('eventPayload relays approval policy switches', () => {
+  assert.deepEqual(eventPayload({ type: 'approval/policy', seq: 18, data: { policy: 'never' } }), {
+    kind: 'approval_policy', seq: 18, policy: 'never', source: null,
+  })
+  assert.deepEqual(eventPayload({ type: 'approval/policy', seq: 19, data: { policy: 'ask', source: 'delegation' } }), {
+    kind: 'approval_policy', seq: 19, policy: 'ask', source: 'delegation',
+  })
+})
+
 test('eventPayload ignores unknown and malformed events', () => {
   for (const input of [null, undefined, 'x', 1, { type: 'session/whatever', seq: 1 }]) {
     assert.equal(eventPayload(input), null)

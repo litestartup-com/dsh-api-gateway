@@ -150,9 +150,16 @@ paths:
               schema:
                 type: string
                 description: >-
-                  'data: ' JSON lines with kind: hello|user|chunk|message|tool_call|tool_result|turn_start|turn_end.
+                  'data: ' JSON lines with kind:
+                  hello|user|chunk|message|tool_call|tool_result|approval_asked|approval_decided|approval_policy|turn_start|turn_end.
                   A `message` frame carries `usage` when the adapter reported token accounting
                   ({ inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?, reasoningTokens? }), else null.
+                  `approval_asked` ({ id, toolName, callId, reason }) means the turn is STOPPED on a
+                  permission decision rather than merely slow; exactly one `approval_decided`
+                  ({ id, outcome: allowed-once|rejected|cancelled|unavailable }) follows it, where
+                  `unavailable` is the fail-closed outcome when no answerer is composed. Read-only
+                  audit: deciding over the API arrives in v0.2.0. `approval_policy`
+                  ({ policy: ask|never, source }) reports a session policy switch.
   /api-gw/v1/sessions/discover:
     get:
       summary: List all sessions (id/title/cwd/live/persisted) — no content

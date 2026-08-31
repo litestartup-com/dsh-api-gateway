@@ -15,6 +15,7 @@ dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 - **Workspace membership**: API sessions land in real workspaces and show grouped in the sidebar, never under "ungrouped"
 - **Session discovery & adoption**: list all sessions, read any session's full history (read-only), and adopt a GUI session to keep driving it over the API — live co-driving or cold resume with full context
 - **Reasoning split**: replies separate `text` (visible answer) from `reasoning` (thinking), never concatenated
+- **No silent blocking**: interactive question cards are handed back to the model as a conversational question, so a turn never stalls on a card nobody can click; permission prompts are relayed as `approval_asked` / `approval_decided` frames instead of looking like a slow turn
 - **Extensible**: publishes `gateway/session-created` / `gateway/session-released` / `gateway/message` / `gateway/turn-end` on the Cordis event bus for other host plugins
 - **Any language client**: works from Linux/macOS/Windows, PowerShell included (UTF-8 aware, GBK-tolerant server side)
 
@@ -55,6 +56,7 @@ The plugin is an ordinary Cordis row; you can also compose it by hand. It publis
     allowAdopt: true            # POST /sessions/:id/adopt
     corsOrigin: '*'             # '*' or an explicit origin / list (list is matched against the request Origin)
     exposeErrors: true          # include internal details in error responses
+    questionMode: conversation  # conversation (ask in the reply) | host (leave it to the GUI)
     sseHeartbeatMs: 30000       # SSE heartbeat interval (0 disables)
     bodyTimeoutMs: 30000        # request body read timeout
 ```
@@ -120,7 +122,7 @@ Two things they get right that ad-hoc snippets often don't:
 | GET | `/sessions/discover` | API key | List sessions (id/title/cwd/live/persisted) — no content |
 | POST | `/sessions/:id/adopt` | API key | Adopt an existing session (`live` co-drive / `resumed` cold-resume); returns full history |
 | POST | `/sessions/:id/messages` | API key | Send a message (string or block array) |
-| GET | `/sessions/:id/stream` | API key | SSE: hello(replay)→chunk→message→tool_call/tool_result→turn_end |
+| GET | `/sessions/:id/stream` | API key | SSE: hello(replay)→chunk→message→tool_call/tool_result→approval_asked/approval_decided→turn_end |
 | GET | `/sessions/:id/history` | API key | Full history of **any** session (read-only) |
 | POST | `/sessions/:id/cancel` | API key | Cancel the active turn |
 | DELETE | `/sessions/:id` | API key | Release the session's `maxSessions` slot — **history is kept** |
@@ -151,6 +153,38 @@ It is idempotent: releasing an unknown or already-released id answers `200` with
 // DELETE /api-gw/v1/sessions/<id>
 { "ok": true, "sessionId": "...", "released": true, "disposed": true, "mode": "created", "historyRetained": true }
 ```
+
+## Interactive asks (questions and approvals)
+
+A Harness agent has two ways to stop and wait for a human, and they are not the same problem. The gateway treats them differently on purpose.
+
+### Questions become conversation
+
+The `ask_user_question` tool blocks a tool call until someone answers a card in the Web GUI. For an API-driven session that card is unanswerable: the turn would hang until it is cancelled, its duration and cost would stop meaning anything, and an unattended client (cron, CI, an IM bridge) would simply stall.
+
+So `questionMode: conversation` (the default) gives the gateway's own sessions a provider that hands the question **back to the model**, telling it to ask in its reply and end the turn. The client then answers with an ordinary `POST /sessions/:id/messages`. No new endpoint, no protocol state, no held-open turn — and the question, the answer and the cost all land in the transcript like any other exchange.
+
+```jsonc
+// what the client sees: a failed tool call carrying the instruction, then a normal reply
+{ "kind": "tool_result", "isError": true, "text": "This session is driven remotely through the API gateway…" }
+{ "kind": "message", "text": "Two options here: (1) keep the old rows, (2) drop them. Which?" }
+```
+
+This applies **only to sessions the gateway created or resumed**. A co-driven GUI session (`live`) keeps the deployment's own provider: someone is watching that browser, and stealing their card would be worse than not handling it. Set `questionMode: host` to opt out entirely and leave every question to the GUI.
+
+> Implementation note, because it is easy to get wrong: the provider slot is a single field that throws `DUPLICATE_PROVIDER` on a second registration, so the gateway does **not** register alongside the GUI. It takes a private service scope (`ctx.isolate`) and registers there, leaving the host slot untouched. `test/questions.test.mjs` pins that behaviour against the real packages.
+
+### Approvals are visible, not yet answerable
+
+A permission prompt is raised by the runtime in the middle of a tool call, not chosen by the model — there is nothing to reword and no way to defer it. It cannot be turned into conversation, so the gateway relays the audit trail instead:
+
+| frame | meaning |
+| --- | --- |
+| `approval_asked` | `{ id, toolName, callId, reason }` — the turn is **stopped**, not slow |
+| `approval_decided` | `{ id, outcome }` — `allowed-once` / `rejected` / `cancelled` / `unavailable` |
+| `approval_policy` | `{ policy, source }` — `ask` or `never` for this session |
+
+That closes the worst gap, which was that a blocked turn and a thinking turn looked identical over the API. It does not let an API client *decide*: with no answerer composed, the deployment's fail-closed default applies and the outcome is `unavailable`. Until answering lands (v0.2.0), an API-only deployment has two honest options — watch the GUI to answer prompts, or run under `policy: never` and accept deterministic rejection.
 
 ## Security model
 
@@ -232,7 +266,7 @@ DeepSeek Harness also ships an official **Python SDK** ([tutorial](https://deeps
 | Sessions | Private JSONL under `session_root`, unrelated to any deployment or GUI | The deployment's shared session corpus: GUI-visible, workspace-grouped, adoptable |
 | Capabilities | Minimal default composition (local bash etc., no skills, no compaction; customizable via `cordis`) | The deployment's default agent preset (tools/skills/sandbox policy) |
 | Platforms | Linux x64/arm64, macOS 14+ arm64; **no Windows** | Any client language/platform, Windows PowerShell included |
-| Isolation | `danger-full-access`; run in disposable environments/containers | Inherits the deployment sandbox and approval policy |
+| Isolation | `danger-full-access`; run in disposable environments/containers | Inherits the deployment sandbox and approval policy (asks are relayed for audit; answering them lands in v0.2.0) |
 | Best for | One-off isolated tasks from Python scripts without a long-running deployment | Third parties connecting to **your running deployment**, multi-language, unified auth/limits/audit, continuing GUI sessions |
 
 Choose the SDK for disposable Python tasks; choose this gateway for everything that needs a persistent, shared, cross-language door. Don't mix the two: DeepSeek `sk-…` keys don't open this gateway, and `pip install deepseek-harness-sdk` does not connect to it.
@@ -264,9 +298,9 @@ Milestones ordered by "security first, then experience, then ecosystem"; each ve
 | Version | Theme | Contents |
 | --- | --- | --- |
 | **v0.1.0** | Baseline (current) | REST + SSE, settings card, reasoning/text split, workspace membership, session adopt, cross-platform docs |
-| **v0.2.0** | Multi-tenant security ★ | Multi-key CRUD/revocation, per-key rate limiting (429 + `Retry-After`), **workspace model: per-key isolated + shared collaborative workspaces (`shared`/`isolated`)**, per-key approval policy, audit (requests/sessions/token usage per key), session persistence (resume after restart) |
+| **v0.2.0** | Multi-tenant security ★ | Multi-key CRUD/revocation, per-key rate limiting (429 + `Retry-After`), **workspace model: per-key isolated + shared collaborative workspaces (`shared`/`isolated`)**, per-key approval policy **and answering approvals over the API** (`approval_request` frame + a decision endpoint), audit (requests/sessions/token usage per key), session persistence (resume after restart) |
 | **v0.3.0** | Admin UI | Full admin settings page (keys/limits/workspace bindings, session monitor, usage audit, soft switch) + typert `@Remote` config surface (the admin page's foundation) + per-key agent preset selection |
-| **v0.4.0** | Duplex streaming | `webServer.registerUpgrade` WebSocket full-duplex (send/stream/cancel on one connection); SSE stays as the lightweight option |
+| **v0.4.0** | Duplex streaming | `webServer.registerUpgrade` WebSocket full-duplex (send/stream/cancel on one connection); SSE stays as the lightweight option; **opt-in relay of interactive question cards** (including `plan-review`, whose verdict is machine-readable and therefore the one case prose cannot replace) for rich clients — a stateful bidirectional flow that belongs on duplex, not on SSE |
 | **v0.5.0** | Ecosystem & ops | Python/Node HTTP thin clients (OpenAPI-generated — **not** the official embedded SDK, see above), deployment guide (reverse proxy + TLS, Docker Compose), metrics/telemetry export, OpenAPI generation in CI |
 
 **Out of scope / deferred**: horizontal multi-process scaling, built-in TLS termination (a reverse proxy's job), OAuth/OIDC (revisit after the key-based model settles).

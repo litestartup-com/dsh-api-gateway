@@ -31,5 +31,12 @@
     allowAdopt: true            # 可选：允许 POST /sessions/:id/adopt（接管任意会话）
     corsOrigin: '*'             # 可选：CORS 源（'*' 或具体域/数组，数组按请求 Origin 匹配回显；公开部署建议收敛）
     exposeErrors: true          # 可选：错误响应是否带内部细节（公开部署建议 false）
+    # 可选：agent 发起互动提问时怎么办。
+    #   conversation（默认）—— 把问题交回模型，要它写进回复并结束回合，你像回消息一样答；
+    #                          回合不会挂住，耗时与成本仍然可信，cron/CI 这类无人值守也安全。
+    #   host           —— 交给部署自己的 provider（即 Web GUI）。只有确实有人盯着那个
+    #                     浏览器时才对：没有应答者的话，回合会一直挂到被取消。
+    # 授权（工具权限）不受这个开关影响：它由运行时在工具调用中途发起，无法改成对话。
+    questionMode: conversation
 
 # 卸载 = 删除上面这一行（可选 pnpm remove dsh-api-gateway），重启。

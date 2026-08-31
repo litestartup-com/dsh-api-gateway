@@ -23,6 +23,9 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+// Value import, not type-only: it also carries the `ctx.userQuestions`
+// augmentation, and the gateway constructs the service inside its own scope.
+import { UserQuestionError, UserQuestionService } from '@deepseek-ai/dsh-user-questions'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createRequire } from 'node:module'
 import z from '@deepseek-ai/schemastery'
@@ -69,6 +72,22 @@ export interface Config {
   corsOrigin: string | string[]
   /** Include internal error messages in HTTP responses (helpful locally, noisy publicly). */
   exposeErrors: boolean
+  /**
+   * What happens when an agent this gateway drives asks an interactive question.
+   *
+   * - `conversation` (default) -- the question is handed back to the model with
+   *   instructions to ask in the reply and end the turn. An API client answers
+   *   it as an ordinary next message, so the turn closes on time and its cost
+   *   and duration stay meaningful.
+   * - `host` -- leave the question to whatever the deployment provides, i.e. the
+   *   Web GUI. Correct only when someone is actually watching that GUI: with no
+   *   answerer the turn blocks until it is cancelled.
+   *
+   * Approvals are deliberately NOT covered here. A question is the model's own
+   * choice and can be re-asked as text; an approval is raised by the runtime
+   * mid-tool-call, so there is nothing to reword and no way to defer it.
+   */
+  questionMode: 'conversation' | 'host'
   /** SSE heartbeat interval in ms; 0 disables. */
   sseHeartbeatMs: number
   /** Request body read timeout in ms. */
@@ -89,6 +108,7 @@ export const Config = z.object({
   allowAdopt: z.boolean().default(true),
   corsOrigin: z.union([z.string(), z.array(z.string())]).default('*'),
   exposeErrors: z.boolean().default(true),
+  questionMode: z.union([z.const('conversation'), z.const('host')]).default('conversation'),
   sseHeartbeatMs: z.natural().default(30_000),
   bodyTimeoutMs: z.natural().default(30_000),
 })
@@ -427,6 +447,82 @@ export default {
       return typeof policy?.workspaceRoot === 'string' && policy.workspaceRoot !== '' ? policy.workspaceRoot : undefined
     }
 
+    // ---- interactive questions ----
+
+    /**
+     * What the model is told when it reaches for an interactive question card.
+     *
+     * It is written AT the model, because that is who receives it: the tool
+     * reports a failed call, and this text is the whole of what the model has to
+     * go on. So it does not merely refuse -- it names the alternative, which is
+     * the one thing a bare refusal would leave the model to guess.
+     */
+    const NO_ANSWERER_HINT = [
+      'This session is driven remotely through the API gateway, so nobody can see or click an interactive question card here.',
+      'Ask in the conversation instead: put the question and its options in your reply, end the turn, and read the human\'s next message as the answer.',
+    ].join(' ')
+
+    /**
+     * A scope whose `userQuestions` provider hands the question back to the model.
+     *
+     * Why a scope at all: the service holds exactly ONE provider in an instance
+     * field and throws DUPLICATE_PROVIDER on a second registration, so the
+     * gateway cannot register alongside a deployment whose GUI already owns that
+     * slot -- and must not, since stealing the slot would send GUI users'
+     * question cards to an HTTP client instead. `ctx.isolate()` gives the
+     * gateway a private slot; the host's is left exactly as it was
+     * (test/questions.test.mjs pins both halves of that claim).
+     *
+     * Why one scope for the whole plugin rather than one per session: the
+     * provider is stateless -- it never collects an answer -- so a per-session
+     * scope would accumulate a service instance and a closure per session for
+     * the life of the plugin, and buy nothing.
+     */
+    let questionScope: Context | null = null
+    let questionScopeFailed = false
+    const downgradingScope = (): Context | null => {
+      if (questionScope !== null) return questionScope
+      // Attempted once. A deployment that cannot give us the scope will not
+      // start giving us one on the next request, and retrying per session would
+      // log the same failure forever.
+      if (questionScopeFailed) return null
+      try {
+        const scope = ctx.isolate('userQuestions')
+        new UserQuestionService(scope)
+        scope.userQuestions.registerProvider({
+          ask: async (request) => {
+            ctx.logger?.debug?.(`[dsh-api-gw] question downgraded to conversation (${request.questions.length} question(s))`)
+            // Thrown, not answered: a fabricated answer would put words in the
+            // human's mouth, and any real answer here would be a lie about who
+            // was asked. The tool turns this into a failed call, which is how
+            // the hint reaches the model.
+            throw new UserQuestionError(NO_ANSWERER_HINT, 'NO_INTERACTIVE_ANSWERER')
+          },
+        })
+        questionScope = scope
+        return scope
+      } catch (error) {
+        // Non-fatal by design: this is a safeguard against a hang, not a
+        // prerequisite for talking to an agent. A Harness too old to provide
+        // the service, or one that refuses the scope, must still get sessions.
+        questionScopeFailed = true
+        ctx.logger?.warn?.(`[dsh-api-gw] questionMode 'conversation' unavailable, leaving questions to the host: ${String(error)}`)
+        return null
+      }
+    }
+
+    /**
+     * The context that owns agents this gateway creates or resumes.
+     *
+     * Read per session rather than once, so flipping `questionMode` at runtime
+     * applies to new sessions; sessions already running keep the scope their
+     * agent was built in, because an agent cannot be moved between scopes.
+     */
+    const agentContext = (): Context => {
+      if (cfg.questionMode !== 'conversation') return ctx
+      return downgradingScope() ?? ctx
+    }
+
     // ---- workspace membership ----
 
     interface WorkspaceLike {
@@ -570,7 +666,7 @@ export default {
 
       // Proper ownership: the plugin fiber owns every created agent, so a
       // plugin stop or update tears each session down cleanly.
-      const handle = await boundedOrThrow(agentLoop.createAgent(ctx, {
+      const handle = await boundedOrThrow(agentLoop.createAgent(agentContext(), {
         sessionId,
         agentOptions: options,
         ...(cwd === undefined ? {} : { meta: { cwd } }),
@@ -649,7 +745,9 @@ export default {
       if (snapshot === null) throw new Error('session_not_found')
       let handle: { agent?: unknown; dispose?: () => Promise<void> | void }
       try {
-        handle = await agentLoop.resume(ctx, { resumeSessionId: sessionId }) as { agent?: unknown; dispose?: () => Promise<void> | void }
+        // Same scope as a created session: a resumed agent is equally ours to
+        // drive, and equally has no human at a GUI.
+        handle = await agentLoop.resume(agentContext(), { resumeSessionId: sessionId }) as { agent?: unknown; dispose?: () => Promise<void> | void }
       } catch (error) {
         throw new Error(`resume_failed: ${String((error as Error).message ?? error)}`)
       }
