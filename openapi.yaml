@@ -1,14 +1,19 @@
 openapi: 3.0.3
 info:
-  title: dsh-api-gateway
-  description: REST + SSE gateway for chatting with DeepSeek Harness agents.
-  version: 0.1.0
+  title: dsh-api-gateway (loopback proxy)
+  version: 0.2.0
+  description: >
+    Authenticated, fail-closed loopback proxy over the DeepSeek Harness /api
+    (apiproxy) surface. Unary calls and respond pass through verbatim; the mux
+    is a downlink-only WebSocket pipe. Wire envelopes belong to apiproxy, not
+    to this proxy: the proxy only checks the method name on the path.
 servers:
-  - url: http://127.0.0.1:3080
+  - url: http://127.0.0.1:3080/api-gw/v1
 paths:
-  /api-gw/v1/health:
+  /health:
     get:
-      summary: Gateway status (reachable even while disabled)
+      summary: Plugin status and upstream liveness
+      security: []
       responses:
         '200':
           description: ok
@@ -19,424 +24,33 @@ paths:
                 properties:
                   status: { type: string, enum: [ok, disabled] }
                   enabled: { type: boolean }
-                  sessions: { type: integer }
-                  apiKeySet:
-                    type: boolean
-                    description: True when any key is accepted (apiKeys, provisionedKey, or an in-memory fallback).
-  /api-gw/v1/key:
+                  upstream: { type: string, enum: [ok, unreachable] }
+                  apiKeySet: { type: boolean }
+  /key:
     post:
-      summary: One-time API key bootstrap (once ever, not once per restart)
-      description: >
-        Unauthenticated only while the deployment has no key at all: apiKeys empty
-        and provisionedKey unset. The minted key is persisted into the settings
-        scope before it is returned, so it survives restarts and this endpoint
-        refuses every later call.
+      summary: One-time key bootstrap (only while no key exists at all)
+      security: []
       responses:
         '200':
-          description: key issued
+          description: key minted
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   apiKey: { type: string }
-                  persisted:
-                    type: boolean
-                    description: False when no settings provider is available; the key is then in-memory and lost on restart.
+                  persisted: { type: boolean }
         '403':
-          description: >
-            key_already_provisioned (a key already exists, from apiKeys or a
-            previous mint) or key_provisioning_disabled (allowKeyProvision false).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error: { type: string, enum: [key_already_provisioned, key_provisioning_disabled] }
-                  hint: { type: string }
-        '500':
-          description: settings_update_failed — the key could not be persisted and was therefore not issued.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error: { type: string }
-                  detail: { type: string }
-  /api-gw/v1/sessions:
+          description: already provisioned or provisioning disabled
+  /admin/enable:
     post:
-      summary: Create a new agent session
-      parameters:
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                provider: { type: string }
-                model: { type: string }
-                maxTokens: { type: integer }
-                cwd: { type: string }
+      summary: Runtime master switch (X-Admin-Key)
       responses:
-        '201':
-          description: session created
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  sessionId: { type: string }
-                  status: { type: string }
-                  provider: { type: string }
-                  model: { type: string }
-                  cwd: { type: string }
-  /api-gw/v1/sessions/{id}/messages:
+        '200': { description: toggled }
+        '401': { description: admin_unauthorized }
+  /admin/rotate-key:
     post:
-      summary: Deliver one user message to the session
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                content:
-                  description: text string or content-block array
-                  oneOf:
-                    - { type: string }
-                    - { type: array, items: { type: object } }
-      responses:
-        '202':
-          description: accepted
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok: { type: boolean }
-                  sessionId: { type: string }
-                  messageId: { type: string }
-                  status: { type: string }
-  /api-gw/v1/sessions/{id}/stream:
-    get:
-      summary: Server-Sent Events stream of session activity; closes at turn_end
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: text/event-stream
-          content:
-            text/event-stream:
-              schema:
-                type: string
-                description: >-
-                  'data: ' JSON lines with kind:
-                  hello|user|chunk|message|tool_call|tool_result|question_asked|question_resolved|approval_pending|approval_resolved|approval_asked|approval_decided|approval_policy|turn_start|turn_end.
-                  A `message` frame carries `usage` when the adapter reported token accounting
-                  ({ inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?, reasoningTokens? }), else null.
-                  Every frame mapped from the session log carries `seq`. The four frames the gateway
-                  originates itself -- question_asked, question_resolved, approval_pending,
-                  approval_resolved -- carry NO `seq`: they are live negotiation rather than durable
-                  transcript, and a client that dedupes replayed history by seq must not drop them.
-                  Whatever is still open is repeated in `hello` as `questions` and `approvals`, which
-                  is how a reconnecting client recovers.
-                  `question_asked` ({ sessionId, questionId, questions[] }) means a tool call is
-                  blocked until POST .../questions/{questionId}/answer (or /cancel); it appears only
-                  when the gateway owns the userQuestions provider (config `questions: gateway`).
-                  `approval_pending` ({ sessionId, decisionId, toolName, callId, reason }) likewise
-                  waits for POST .../approvals/{decisionId}/decide under `approvals: gateway`.
-                  `question_resolved` / `approval_resolved` ({ ..., outcome }) close an ask for every
-                  listener, including when someone else answered first.
-                  The audit frames are relayed regardless of those settings: `approval_asked`
-                  ({ id, toolName, callId, reason }) means the turn is STOPPED on a permission
-                  decision rather than merely slow, and exactly one `approval_decided`
-                  ({ id, outcome: allowed-once|rejected|cancelled|unavailable }) follows it, where
-                  `unavailable` is the fail-closed outcome when no answerer is composed.
-                  `approval_policy` ({ policy: ask|never, source }) reports a session policy switch.
-  /api-gw/v1/sessions/{id}/questions:
-    get:
-      summary: Interactive questions awaiting an answer, and who owns answering them
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: >-
-            { sessionId, answeredBy: gateway|host, questions: [ { questionId, askedAt, questions[] } ] }.
-            `answeredBy: host` means this deployment's own UI owns the provider slot, so nothing here
-            can be answered over the API.
-        '404': { description: session_not_found — adopt it first }
-  /api-gw/v1/sessions/{id}/questions/{questionId}/answer:
-    post:
-      summary: Answer one interactive question, unblocking the tool call that waits on it
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: path
-          name: questionId
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [answers]
-              properties:
-                answers:
-                  type: array
-                  description: >-
-                    One entry per question asked -- all of them. `selected` holds option labels
-                    (not indexes); `custom` is free text, and the only way to answer a question
-                    that offered no options.
-                  items:
-                    type: object
-                    required: [id]
-                    properties:
-                      id: { type: string }
-                      selected: { type: array, items: { type: string } }
-                      custom: { type: string }
-      responses:
-        '200': { description: '{ ok, sessionId, questionId, outcome: answered }' }
-        '400':
-          description: >-
-            invalid_answer — a missing question, an unknown id, an option that was not offered, or
-            several selections on a single-select question. The question stays open: this answer
-            becomes a tool result the model acts on, so a partial or invented one is refused rather
-            than forwarded.
-        '404': { description: question_not_found — already answered, cancelled, or the turn ended }
-  /api-gw/v1/sessions/{id}/questions/{questionId}/cancel:
-    post:
-      summary: Decline to answer; the tool call fails and the model carries on knowing that
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: path
-          name: questionId
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      responses:
-        '200': { description: '{ ok, sessionId, questionId, outcome: cancelled }' }
-        '404': { description: question_not_found }
-  /api-gw/v1/sessions/{id}/approvals:
-    get:
-      summary: Permission prompts awaiting a decision
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: '{ sessionId, decidedBy: gateway|host, approvals: [ { decisionId, toolName, callId, reason, askedAt } ] }'
-        '404': { description: session_not_found — adopt it first }
-  /api-gw/v1/sessions/{id}/approvals/{decisionId}/decide:
-    post:
-      summary: Decide one permission prompt
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: path
-          name: decisionId
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [outcome]
-              properties:
-                outcome:
-                  type: string
-                  enum: [allowed-once, rejected]
-                  description: >-
-                    `allowed-once` is the vocabulary's only grant and covers exactly the call being
-                    decided -- there is no way from here to widen a session's policy or to remember a
-                    decision. `cancelled` and `unavailable` are deliberately not accepted: they
-                    belong to whoever withdrew the request and to the fail-closed default, and
-                    accepting them would let a client record a refusal as an infrastructure failure.
-      responses:
-        '200': { description: '{ ok, sessionId, decisionId, outcome }' }
-        '400': { description: invalid_outcome }
-        '404': { description: approval_not_found — already decided, withdrawn, or the turn ended }
-  /api-gw/v1/sessions/discover:
-    get:
-      summary: List all sessions (id/title/cwd/live/persisted) — no content
-      parameters:
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: session list
-  /api-gw/v1/sessions/{id}/adopt:
-    post:
-      summary: Adopt an existing session (live shared-drive or cold resume); returns full history
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: adopted; mode is live (GUI session still open) or resumed (cold-loaded)
-  /api-gw/v1/sessions/{id}/history:
-    get:
-      summary: Full history of ANY session (owned, GUI, or cold) — read-only
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: history
-  /api-gw/v1/sessions/{id}:
-    delete:
-      summary: Release the session's maxSessions slot (history is retained)
-      description: >-
-        Removes the session from this gateway's registry, freeing a slot against
-        `maxSessions`. Open SSE streams are ended and an in-flight turn is
-        cancelled. The agent is disposed only for sessions this gateway owns
-        (`created` / `resumed`); a co-driven `live` GUI session is merely
-        untracked. The durable transcript is never deleted, so
-        `GET /sessions/{id}/history` keeps answering and
-        `POST /sessions/{id}/adopt` can take the session back. Idempotent.
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: slot released, or already free
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok: { type: boolean }
-                  sessionId: { type: string }
-                  released:
-                    type: boolean
-                    description: false when the id was unknown or already released
-                  disposed:
-                    type: boolean
-                    description: whether the underlying agent was disposed (owned sessions only)
-                  mode:
-                    type: string
-                    enum: [created, live, resumed]
-                    description: absent when nothing was released
-                  historyRetained: { type: boolean, enum: [true] }
-  /api-gw/v1/sessions/{id}/cancel:
-    post:
-      summary: Cancel the active turn
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-        - in: header
-          name: X-API-Key
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: cancelled
-  /api-gw/v1/admin/enable:
-    post:
-      summary: Runtime master switch (admin key required)
-      parameters:
-        - in: header
-          name: X-Admin-Key
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabled: { type: boolean }
-      responses:
-        '200':
-          description: new state
-  /api-gw/v1/admin/rotate-key:
-    post:
-      summary: Rotate the provisioned API key (admin key required)
-      description: >
-        Replaces provisionedKey and persists it. Static apiKeys are left
-        untouched: they are the operator's own list, not the gateway's to revoke.
-      parameters:
-        - in: header
-          name: X-Admin-Key
-          required: true
-          schema: { type: string }
+      summary: Rotate the provisioned key (X-Admin-Key)
       responses:
         '200':
           description: new key
@@ -447,7 +61,50 @@ paths:
                 properties:
                   apiKey: { type: string }
                   persisted: { type: boolean }
-        '401':
-          description: admin_unauthorized
-        '500':
-          description: settings_update_failed
+  /proxy/{method}:
+    post:
+      summary: Unary apiproxy passthrough (whitelisted methods only)
+      parameters:
+        - name: method
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            One of: session.list, session.create, session.history, session.prompt,
+            session.cancel, session.rename, session.fork, session.updateQueue,
+            session.attachment, session.models, session.selectModel, respond,
+            host.describe
+      security:
+        - ApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { description: apiproxy server-response, verbatim }
+        '401': { description: unauthorized }
+        '403': { description: method_not_allowed (whitelist) }
+        '502': { description: upstream_unreachable }
+  /events.mux:
+    get:
+      summary: >
+        Mux WebSocket downlink (X-API-Key in the upgrade headers). Downlink
+        only: any client frame closes the socket with 1008.
+      description: >
+        Also registered at /proxy/events.mux so clients whose base is the
+        proxy prefix derive the mux URL uniformly.
+      security:
+        - ApiKey: []
+      responses:
+        '101': { description: Switching Protocols; server-request frames follow }
+        '401': { description: upgrade refused before protocol negotiation }
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerKey:
+      type: http
+      scheme: bearer

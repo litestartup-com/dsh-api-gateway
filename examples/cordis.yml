@@ -1,10 +1,10 @@
-# 示例：把 dsh-api-gateway 加进你的宿主组合（host composition）。
+# 示例：把 dsh-api-gateway（loopback proxy 形态）加进你的宿主组合（host composition）。
 #
 # 你的部署已有完整的宿主组合文件（cordis.yml）——不要整体替换，只需把
 # `dsh-api-gw` 这一行加进去（行格式与现有行保持一致），然后重启。
 #
 # 平面归属：该插件发布跨会话共享的 HTTP 服务，必须挂在宿主组合，
-# 不能放进任何 agent preset（预设挂载会以“发布进程级服务”拒绝）。
+# 不能放进任何 agent preset。
 
 # 部署自带的 HTTP 载体行（示例，按你现有配置为准）：
 - id: webserver
@@ -21,36 +21,12 @@
   config:
     prefix: /api-gw/v1          # 网关路由前缀（注册在 webServer 载体上）
     enabled: true               # 主开关；也可运行时经 admin 端点软开关
-    apiKeys: []                 # 可选：预置静态 API 密钥
-    allowKeyProvision: true     # 允许首次 POST /key 自助发放密钥
-    adminKey: change-me         # 可选：设置后启用 admin 端点与 GUI 卡片开关
-    maxSessions: 20             # 并发会话上限
-    workspaceMode: auto         # 可选：auto（默认，会话自动挂入工作区）/ ungrouped
-    defaultWorkspacePath: ''    # 可选：auto 模式下无 cwd 时的默认归属目录
-    allowDiscover: true         # 可选：允许 GET /sessions/discover（列出全部会话）
-    allowAdopt: true            # 可选：允许 POST /sessions/:id/adopt（接管任意会话）
-    corsOrigin: '*'             # 可选：CORS 源（'*' 或具体域/数组，数组按请求 Origin 匹配回显；公开部署建议收敛）
+    apiKeys: []                 # 可选：预置静态 API 密钥（跨机客户端用）
+    allowKeyProvision: true     # 允许首次 POST /key 自助发放密钥（一次性）
+    adminKey: change-me         # 可选：设置后启用 admin 端点
+    corsOrigin: '*'             # 可选：CORS 源（公开部署建议收敛）
     exposeErrors: true          # 可选：错误响应是否带内部细节（公开部署建议 false）
-    # 可选：谁回答 agent 的互动提问（ask_user_question）。
-    #   host（默认）—— 不插手，交给部署自己的 provider。在带 Web UI 的 profile 里，
-    #                  卡片就弹在那个浏览器上，外网的 API 客户端点不到。
-    #   gateway     —— 提问以 question_asked 帧转给 API 客户端，用
-    #                  POST /sessions/:id/questions/:questionId/answer 回答。
-    #                  agent、工具、模型都不受影响：ask() 照旧阻塞、照旧拿人的回答，
-    #                  只是那个人换成了远端客户端。
-    #
-    # ⚠ gateway 是「请求槽位」，不是「抢」：userQuestions 只容一个 provider，
-    #   被占了网关就安静退让（GET /sessions/:id/questions 的 answeredBy 会说实话）。
-    #   想把槽位腾出来，禁掉 @deepseek-ai/dsh-host-apiproxy 那一行——它是浏览器 UI
-    #   的后端，不是 HTTP 载体（dsh-host-webserver），所以网关照常对外服务。
-    questions: host
-    # 可选：谁批授权请求（工具权限）。
-    #   host（默认）—— 交给部署自己的应答者。
-    #   gateway     —— 以 approval_pending 帧转给 API 客户端，用
-    #                  POST /sessions/:id/approvals/:decisionId/decide 决定。
-    # 授权不需要槽位（approval/request 是 waterfall，应答者共存），所以在带 GUI 的
-    # profile 里也能开；且只接管本网关驱动的会话，唯一能给的授权是一次性的
-    # allowed-once，改不宽会话 policy。
-    approvals: host
+    proxyTarget: http://127.0.0.1:3080/api   # 上游 /api 基础地址（一般不动）
+    # proxyWhitelist: [...]     # 可选：覆盖默认白名单（默认见 README）
 
-# 卸载 = 删除上面这一行（可选 pnpm remove dsh-api-gateway），重启。
+# 卸载 = 删除上面这一行（可选 dsh plugin remove dsh-api-gateway），重启。

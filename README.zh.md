@@ -1,338 +1,99 @@
 # dsh-api-gateway
 
-[English](README.md) | 中文
+DeepSeek Harness 宿主插件：一个**带鉴权、fail-closed 的 loopback 反向代理**，把宿主机自身的
+`/api` 面（apiproxy = `dsh-client-connection` + `dsh-host-apiproxy`）暴露给另一台机器上的客户端
+（典型：dsh-agent-manager）。
 
-给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 API Gateway 插件：把正在运行的 Harness 变成 HTTP API——任何第三方客户端（curl、Python、浏览器、IM 桥）都能创建 Agent 会话、经 SSE 逐 token 流式接收回复、并**继续 UI 里聊到一半的会话**，全程 API 密钥鉴权。API 会话与 GUI 会话驱动同一套 Agent 机器（inbox + 会话日志），两边天然同步。
+> v0.2.0 起（S3）：插件不再自己驱动 agent。会话、消息、问答、授权全部由宿主的 apiproxy 处理，
+> 插件只做三件事：**鉴权、白名单、透传**。
 
-```sh
-dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
-```
+## 为什么需要它
 
-## 特性
-
-- **REST + SSE**：10 个端点；token 级流式回包（`assistant/chunk`），`turn_end` 后服务端关流
-- **GUI 设置卡片**：设置 → 插件 → 可配置 → **dsh-api-gw**（默认折叠，右侧 chevron 展开；状态 / 软开关 / 密钥轮换）。默认英文，页面或浏览器语言为中文时自动切中文
-- **工作区归属**：API 会话落进真实工作区，侧边栏分组显示，不再进「未分组」
-- **会话发现与接管**：列出全部会话、只读任意会话完整历史、adopt 接管 GUI 会话继续对话——在线共驾或冷恢复，上下文无缝衔接
-- **reasoning 分离**：回复拆分为 `text`（正式回答）与 `reasoning`（思考过程），不再混装
-- **可扩展**：在 Cordis 事件总线上发布 `gateway/session-created` / `gateway/session-released` / `gateway/message` / `gateway/turn-end`，供其他宿主插件订阅
-- **任意语言客户端**：Linux/macOS/Windows 通吃（含 PowerShell；UTF-8 安全、服务端 GBK 兼容）
+DSH 的 `/api` 只认 loopback（Host 头栅栏不是鉴权，跨机直连 `:3080` 不可行也不安全）。
+本插件跑在 DSH 进程内，内部 fetch 天然走 loopback，对外靠 API Key 鉴权 + 白名单保护。
 
 ## 安装
 
-### 推荐：`dsh plugin add`
-
-```sh
-# 从 GitHub 安装（已含构建产物，无需构建授权）
-dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
-
-# 从 tarball 安装
-dsh plugin --profile web add ./dsh-api-gateway-0.1.0.tgz
-```
-
-> 已提交构建产物 `lib/`，从 GitHub 安装无需构建授权；构建脚本（`prepack`）只在打包/发布时执行。
-
-卸载：`dsh plugin --profile web remove dsh-api-gateway`。
-
-### 手动组合行（不用 CLI）
-
-插件本质是普通 Cordis 行，也可手工编排。它发布跨会话共享的 HTTP 面，应挂**宿主组合**（或 profile 的补丁层）——绝不能放进 agent preset：
-
-```yaml
-- id: dsh-api-gw
-  name: dsh-api-gateway
-  config:
-    prefix: /api-gw/v1          # 路由前缀
-    enabled: true               # 主开关（也可运行时软开关）
-    apiKeys: []                 # 预置静态 API 密钥
-    allowKeyProvision: true     # 首调 POST /key 自助发钥（仅当一把密钥都没有时）
-    # provisionedKey            # 由网关自己写入，不要手填；见「安全模型」
-    adminKey: change-me         # 启用 admin 端点与卡片控件
-    maxSessions: 20             # 并发会话上限
-    workspaceMode: auto         # auto（默认，自动挂入工作区）/ ungrouped
-    defaultWorkspacePath: ''    # auto 模式下无 cwd 时的默认归属目录
-    allowDiscover: true         # GET /sessions/discover
-    allowAdopt: true            # POST /sessions/:id/adopt
-    corsOrigin: '*'             # '*' 或具体域/列表（列表按请求 Origin 匹配回显）
-    exposeErrors: true          # 错误响应是否带内部细节
-    questions: host             # host（交给部署自己的 UI）| gateway（转给 API 客户端答）
-    approvals: host             # host | gateway（授权请求转给 API 客户端批）
-    sseHeartbeatMs: 30000       # SSE 心跳间隔（0 关闭）
-    bodyTimeoutMs: 30000        # 请求体读取超时
-```
-
-所有键都有 schema 默认值——完整注释版见 `examples/cordis.yml`。
-
-## 快速开始
-
-DSH 跑起来后，直接问 agent 一句话。脚本会自己领 key、建会话、发问并逐 token 打印回答：
-
-```bash
-./examples/ask.py "介绍一下你自己"        # 全平台，零依赖
-```
-
 ```powershell
-.\examples\ask.ps1 "介绍一下你自己"       # Windows 原生，零依赖
+dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 ```
 
-不带问题就进交互模式（同一会话多轮问答）。`--help` 列出全部参数，常用的几个：
+在宿主组合加一行（见 `examples/cordis.yml`），重启 DSH。
 
-| 参数 | 作用 |
-| --- | --- |
-| `-s <会话id>` | 接管已有会话——包括 GUI 里正开着的那个 |
-| `-l` | 列出网关能看到的所有会话 |
-| `--no-stream` | 不用 SSE，轮询拿最终答案 |
-| `-c <目录>` | 新会话的工作目录（决定归属工作区） |
+## 配置
 
-想直接看协议本身：
-
-```bash
-BASE=http://127.0.0.1:3080/api-gw/v1
-KEY=$(curl -s -X POST $BASE/key | jq -r .apiKey)                       # 引导领钥，一辈子只能领一次（密钥本身长期有效）
-SID=$(curl -s -X POST $BASE/sessions -H "Authorization: Bearer $KEY" | jq -r .sessionId)
-curl -sN $BASE/sessions/$SID/stream -H "Authorization: Bearer $KEY" &   # 先接流，再发问
-curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
-  -H 'Content-Type: application/json' -d '{"content":"你好"}'          # 202 已受理
-```
-
-### 客户端示例
-
-三个可直接读的脚本，参数与行为完全一致：
-
-| 脚本 | 依赖 | 说明 |
+| 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `examples/ask.py` | Python 3.8+ | 只用标准库，参考实现 |
-| `examples/ask.ps1` | PowerShell 5.1+ | Windows 上 UTF-8 安全 |
-| `examples/ask.sh` | bash 4+、curl、jq | |
-
-它们处理好了两个手写片段最容易踩的点：
-
-- **先接流再发问**：服务端在 `turn_end` 关流，回合结束后才接就永远等不到事件；提前接没有代价，首帧 `hello` 会回放已有历史。整个回合都错过了就直接读 `GET /sessions/:id/history`。
-- **声明 charset**：服务端按请求 `Content-Type` 的 charset 解码（默认 UTF-8，兼容 GBK）。否则 PowerShell 5.1 会按 ANSI/GBK 发出中文导致乱码；且 PowerShell 5.1 下 `curl.exe -d '{"a":"b"}'` 会丢掉内层引号（非法 JSON → 400，还被 `-s` 静默）。请发 UTF-8 字节，或用 `--data-binary "@file"`。
+| `prefix` | `/api-gw/v1` | 路由前缀 |
+| `enabled` | `true` | 主开关（可 admin 运行时切换） |
+| `apiKeys` | `[]` | 静态 API 密钥 |
+| `provisionedKey` | — | `POST {prefix}/key` 一次性自助发放的密钥（存 settings） |
+| `allowKeyProvision` | `true` | 允许首次无钥自助发放 |
+| `adminKey` | — | 设置后启用 admin 端点 |
+| `corsOrigin` | `*` | CORS 来源（`'*'` 或具体域/数组） |
+| `exposeErrors` | `true` | 错误响应是否带内部细节 |
+| `proxyTarget` | `http://127.0.0.1:3080/api` | 上游 `/api` 基础地址 |
+| `proxyWhitelist` | 默认白名单 | 可选：覆盖默认白名单 |
 
 ## 端点
 
-| 方法 | 路径 | 鉴权 | 说明 |
-| --- | --- | --- | --- |
-| GET | `/health` | 无 | 状态（停用时仍可访问） |
-| POST | `/key` | 仅首次（无密钥时） | 引导发放 API 密钥，落盘后永久关闭 |
-| POST | `/sessions` | API Key | 创建会话（`provider/model/maxTokens/cwd/workspace`） |
-| GET | `/sessions/discover` | API Key | 会话清单（id/title/cwd/live/persisted），不含内容 |
-| POST | `/sessions/:id/adopt` | API Key | 接管会话（`live` 共驾 / `resumed` 冷恢复），返回完整历史 |
-| POST | `/sessions/:id/messages` | API Key | 发消息（字符串或块数组） |
-| GET | `/sessions/:id/stream` | API Key | SSE：hello(回放 + 待答项)→chunk→message→tool_call/tool_result→question_asked/approval_pending→turn_end |
-| GET | `/sessions/:id/history` | API Key | **任意**会话完整历史（只读） |
-| GET | `/sessions/:id/questions` | API Key | 待答的互动提问，并告诉你 `answeredBy` |
-| POST | `/sessions/:id/questions/:questionId/answer` | API Key | 回答提问（解除工具调用阻塞） |
-| POST | `/sessions/:id/questions/:questionId/cancel` | API Key | 拒答（工具调用失败，回合继续） |
-| GET | `/sessions/:id/approvals` | API Key | 待决定的授权请求 |
-| POST | `/sessions/:id/approvals/:decisionId/decide` | API Key | `allowed-once` 或 `rejected` |
-| POST | `/sessions/:id/cancel` | API Key | 中止当前回合 |
-| DELETE | `/sessions/:id` | API Key | 归还该会话占用的 `maxSessions` 名额 —— **历史保留** |
-| POST | `/admin/enable` | Admin Key | 运行时软开关 `{"enabled": bool}` |
-| POST | `/admin/rotate-key` | Admin Key | 轮换 `provisionedKey`（不影响 `apiKeys`） |
+| 方法 | 路径 | 鉴权 |
+| --- | --- | --- |
+| GET | `{prefix}/health` | 无 |
+| POST | `{prefix}/key` | 首次无钥（一次性自助发放） |
+| POST | `{prefix}/admin/enable` | X-Admin-Key |
+| POST | `{prefix}/admin/rotate-key` | X-Admin-Key |
+| POST | `{prefix}/proxy/<method>` | X-API-Key / Bearer |
+| POST | `{prefix}/proxy/respond` | X-API-Key / Bearer |
+| GET | `{prefix}/events.mux`（WebSocket 升级） | X-API-Key |
 
-鉴权头二选一，等价：`Authorization: Bearer <key>`（推荐，RFC 6750）或 `X-API-Key: <key>`。
+同一 mux 升级路径也注册在 `{prefix}/proxy/events.mux`，使客户端「base + method」的统一约定
+（manager 的 rpc base 即 `/api-gw/v1/proxy`）无需为 mux 特判。
 
-完整规范：[openapi.yaml](./openapi.yaml)。
+mux 管道**下行只读**：客户端发任何帧都被 1008 关闭（与宿主 mux 行为一致）。断线重连是客户端的事。
 
-### 归还会话名额
+## 白名单（默认）
 
-`maxSessions` 限制网关同时持有的会话数，满了之后建会话会直接失败。`DELETE /sessions/:id` 把名额还回去。对「每个任务开一个会话」的客户端来说这是必需的：否则长期运行的部署迟早撞上限，此后既建不了新会话**也 adopt 不了旧会话**，只能重载网关。
-
-它做什么、不做什么：
-
-| | |
-| --- | --- |
-| 释放 `maxSessions` 名额 | 是 |
-| 关闭该会话上的 SSE 流 | 是 |
-| dispose 掉 agent | **仅当**网关持有它（`created` / `resumed`） |
-| 影响共驾的 GUI 会话（`live`） | **不会** —— 只解除跟踪，Web UI 那边照旧 |
-| 删除对话历史 | **不会** —— `GET /sessions/:id/history` 照样能读，`POST /sessions/:id/adopt` 能把会话拿回来 |
-
-幂等：对未知或已释放的 id 返回 `200` 且 `released: false`，所以客户端可以在清理路径里无条件调用。若回合仍在进行，先取消再释放。
-
-```jsonc
-// DELETE /api-gw/v1/sessions/<id>
-{ "ok": true, "sessionId": "...", "released": true, "disposed": true, "mode": "created", "historyRetained": true }
+```
+session.list, session.create, session.history,
+session.prompt, session.cancel, session.rename,
+session.fork, session.updateQueue, session.attachment,
+session.models, session.selectModel,
+respond,  host.describe
 ```
 
-## 互动式询问（提问与授权）
-
-agent 有两种停下来等人的方式：`ask_user_question`（模型自己选的）和授权请求（运行时在工具调用中途发起的）。两者都会把回合挂住直到有人应答。网关要做的不是改变这一点——而是让「有人」可以是一个 API 客户端，而不只能是浏览器。
-
-这里的一切**不碰 agent、不碰工具、不碰模型**。`ask()` 照旧阻塞工具调用，照旧返回人的回答；只有**那个人坐在哪里**变了。
-
-### 提问：`questions: gateway`
-
-问题以帧的形式转发出去，用 HTTP 回答：
-
-```jsonc
-// SSE，没有 `seq`——这是实时协商，不是持久日志里的一条
-{ "kind": "question_asked", "sessionId": "...", "questionId": "apigw-q-…",
-  "questions": [ { "id": "q1", "question": "旧记录删掉？",
-                   "options": [ { "label": "保留" }, { "label": "删掉", "description": "不可逆" } ] } ] }
-```
-
-```bash
-curl -X POST "$GW/sessions/$SID/questions/$QID/answer" -H "Authorization: Bearer $KEY" \
-  -H 'content-type: application/json' -d '{"answers":[{"id":"q1","selected":["保留"]}]}'
-```
-
-**每个问到的问题都必须答**，每个选项标签都必须是它给过的（或者配上 `custom` 自由文本）——因为这个答案会变成模型据以行动的工具结果，所以不完整或凭空的答案会被 `400` 拒掉，卡片继续开着。`POST …/questions/:id/cancel` 是拒答：工具调用失败，而这个信息模型能用。`question_resolved` 向所有监听者宣告它已关闭，所以先答的人赢。
-
-**拿槽位是「请求」，不是「抢」。** `userQuestions` 槽位只容一个 provider，第二次注册会**抛异常**——而浏览器 UI 的后端自己那句注册没有 try/catch，所以网关若抢先占住，会连带整个 GUI 一起崩。因此网关**只在第一个会话出现时**才去请求槽位（那时整棵插件树已经装完，所以竞争中输的永远是它自己），发现被占就安静退让。`GET /sessions/:id/questions` 的 `answeredBy` 会告诉你实际归谁。
-
-想把槽位腾出来：在 profile 里禁掉 `@deepseek-ai/dsh-host-apiproxy` 那一行。它是**浏览器 UI 的后端**，不是 HTTP 载体（`@deepseek-ai/dsh-host-webserver`），所以网关照常对外服务；代价只是这个 profile 本地的浏览器 UI 用不了。
-
-### 授权：`approvals: gateway`
-
-授权不需要槽位：`approval/request` 是 waterfall，应答者可以**共存**——所以在一个同时跑着 GUI 的 profile 里也能开。
-
-```jsonc
-{ "kind": "approval_pending", "decisionId": "apigw-ap-…", "toolName": "write_file", "callId": "…", "reason": "…" }
-```
-
-```bash
-curl -X POST "$GW/sessions/$SID/approvals/$DID/decide" -H "Authorization: Bearer $KEY" \
-  -H 'content-type: application/json' -d '{"outcome":"allowed-once"}'
-```
-
-只接受 `allowed-once` 和 `rejected`，而 `allowed-once` 是这套词汇里**唯一的授权**，且只覆盖当下这一次调用。这里有意没有任何办法去改宽会话的 policy，也没办法「记住」一个决定。不由本网关驱动的会话，其授权请求直接传给部署自己的应答者。
-
-### 审计帧（总是开着）
-
-与上面两个开关无关，授权审计链一律转发，因为一个**停住的**回合绝不能看起来像一个很慢的回合：
-
-| 帧 | 含义 |
-| --- | --- |
-| `approval_asked` | `{ id, toolName, callId, reason }` —— 回合停住了，在等一个决定 |
-| `approval_decided` | `{ id, outcome }` —— `allowed-once` / `rejected` / `cancelled` / `unavailable` |
-| `approval_policy` | `{ policy, source }` —— 本会话的 `ask` 或 `never` |
-
-`approvals: host` 且没人盯着部署自己的 UI 时，适用 fail-closed 默认值，结果是 `unavailable`。无人值守想要确定性，用 `policy: never`：每个请求不问任何人直接拒绝。
+白名单外 → `403 { error: 'method_not_allowed' }`，**不发往上游**。特权面
+（`credentials.*`、`settings.*`、`host.openPath`、`host.pickDirectory`、`llm.discoverModels` 等）
+在代理上不可达。注意：真实方法名是 `host.describe`（`host.version` 不存在）。
 
 ## 安全模型
 
-**`POST /key` 为什么能直接领到密钥？** 它是"首次调用引导"，不是常开的发钥匙口：
+- 鉴权不可退化：constant-time 比较、CSPRNG 密钥、一次性自助发放（已有任何密钥即永久关闭）。
+- 白名单 fail-closed；代理**不解析 RPC 包络**，只按路径段校验方法名，字节透传。
+- 密钥绝不写日志；`apiKeys`/`adminKey` 在 settings 线上 surface 脱敏。
 
-- 仅当**一把密钥都没有**（`apiKeys` 为空**且** `provisionedKey` 未设）时，`POST /key` 才生成一枚 32 位随机密钥。
-- 新密钥**先落盘再返回**：写入 settings 作用域的 `provisionedKey`，所以它跨重启一直有效，而这个引导入口从此**永久关闭**（后续任何调用一律 403 `key_already_provisioned`）。这是「仅一次」的真正含义——**一辈子一次**，不是每次重启一次。
-- 默认网关挂回环地址，第一个触达者只可能是部署者本人——等价于首次开机设密码。
-- 已配 `apiKeys` 的部署，这个入口一开始就是关的：配置本身就意味着「已有密钥」。
-- 不信任这个窗口就焊死：`allowKeyProvision: false`，密钥只从 `apiKeys: [...]` 预置。
-- 轮换用 `POST /admin/rotate-key`（需 `adminKey`），它只替换 `provisionedKey`，**不动** `apiKeys`——那是运维自己的清单，网关无权吊销。
-- 密钥**不写日志**。想确认是否已有密钥，看 `GET /health` 的 `apiKeySet`。
+## 部署步骤
 
-> 无 settings provider 的部署无法落盘，此时回落为内存密钥（重启失效），响应里 `persisted: false`，日志给出 warning。这类部署应直接用 `apiKeys`。
+1. 构建并提交：`pnpm build && pnpm test`（42 测试全绿；`lib/` 必须同步提交）。
+2. 更新宿主安装：`dsh plugin update`（或 `profiles/web` 下 `pnpm install`）。
+3. 重启 DSH。
+4. 跑验收（见下）。
 
-纵深（生产清单）：
+## 验收步骤
 
-1. `allowKeyProvision: false` + 预置 `apiKeys`
-2. 保持回环绑定；对外必走反向代理 + TLS
-3. `adminKey` 与 API 密钥分开管理
-4. 每会话独立 Agent 上下文；会话 ID 为密码学随机
-5. 鉴权头主推 `Authorization: Bearer`（`X-API-Key` 仅作别名）
-6. 恒定时间密钥比较（`crypto.timingSafeEqual`）+ CSPRNG 密钥生成
+1. `GET {prefix}/health` → 200，`upstream: ok`。
+2. `POST {prefix}/proxy/credentials.set`（带正确 key）→ 403 `method_not_allowed`。
+3. `POST {prefix}/proxy/session.list` 用错 key → 401。
+4. 带正确 key：`POST {prefix}/proxy/host.describe` 返回 DSH 版本；`session.list` 返回会话列表。
+5. WebSocket 连 `ws://host{prefix}/proxy/events.mux`（握手带 `X-API-Key`），
+   `session.prompt` 后应实时收到 `session/event` 帧直到 `turn/end`。
 
-已知缺口（公开透明）：无按密钥限流/配额、吊销清单、多密钥管理 UI、审计——多租户对抗场景等 v0.2+ 或自己前置网关。持有 API Key 即可发现/读取/接管**全部**会话——单机是特性，多租户是风险，可用 `allowDiscover`/`allowAdopt` 关闭（per-key 白名单在 v0.2.0）。
+自动化验收：本仓库 `scripts/proxy-host.mjs`（独立验收宿主）+
+`dsh-agent-manager/scripts/smoke-proxy-b.ts`（manager 走 proxy 路径的端到端冒烟）。
 
-## 工作区归属
+## 卸载
 
-API 会话与 GUI 会话一样落进工作区（侧边栏分组，不进「未分组」）。`POST /sessions` 的 `workspace` 三种写法：
-
-```jsonc
-{ "workspace": "C:\\projects\\team-a" }                                // 路径字符串
-{ "workspace": { "path": "C:\\projects\\team-a", "title": "团队A" } }   // 带标题（新建时生效）
-{ "workspace": { "id": "ws-xxx" } }                                    // 已有工作区 ID
-```
-
-规则（服务端确定性执行）：
-
-- 路径已有工作区 → 复用；否则**自动创建**（标题默认取目录名）
-- `id` 不存在 → 400 附现有工作区清单（id/title/path）
-- 未给 `workspace` → `workspaceMode`：`auto`（默认，按会话 cwd/`defaultWorkspacePath` 解析或创建并挂载）或 `ungrouped`
-- 同时给 `cwd` 与 `workspace` → workspace 优先，会话 cwd 强制为工作区规范路径（持久成员关系前提：会话头 cwd == 工作区路径）
-- 目录不存在 → 400（网关不代为建目录）
-
-响应与 `history` 均回带 `workspace: { id, path, title }`。共享协作工作区（多密钥共用路径）在 v0.2.0。
-
-## 会话发现与接管（UI 会话 → API 续聊）
-
-```bash
-# ① 发现会话
-curl -s $BASE/sessions/discover -H "Authorization: Bearer $KEY"
-
-# ② 接管：在线共驾 / 冷恢复；返回完整历史
-curl -s -X POST $BASE/sessions/$SID/adopt -H "Authorization: Bearer $KEY"
-# → { "mode": "live" | "resumed", "history": [...] }
-
-# ③ 继续对话 —— 与网关自建会话用法一致
-curl -s -X POST $BASE/sessions/$SID/messages \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"content":"接着上次继续"}'
-```
-
-| mode | 含义 | 生命周期 |
-| --- | --- | --- |
-| `created` | 网关自建会话 | 随网关 |
-| `live` | **共驾** GUI 在线会话：API 消息直接出现在 GUI 对话流，双方回合排队 | 只借驾；插件停止 = 解除跟踪 |
-| `resumed` | 冷恢复离线会话（需 `sessionPersistence`） | 恢复后归网关持有 |
-
-`GET /sessions/:id/history` 对**任意**会话可用（只读，无需先接管）；`/messages`、`/stream`、`/cancel` 需先 adopt。
-
-## 与官方 Python SDK 的关系
-
-DeepSeek Harness 官方另有 **Python SDK**（[快速上手](https://deepseek-harness.github.io/deepseek-harness/guide/python-sdk) / [SDK 参考](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md)）。两者**不是同一种东西，也不互相替代**：
-
-| | 官方 Python SDK | 本网关 |
-| --- | --- | --- |
-| 本质 | **嵌入式运行时**：`pip install deepseek-harness-sdk` 自带平台 wheel，以**子进程**驱动内置 `dsh-jsonrpc-agent`（JSON-RPC stdio） | **运行中 Harness 的一扇门**：宿主组合插件，REST + SSE |
-| 模型凭据 | DeepSeek API Key（`DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL`） | 网关自管 API Key（与模型凭据无关） |
-| 会话 | `session_root` 下私有 JSONL，与部署/GUI 无关 | 部署共享会话库：GUI 可见、工作区分组、可接管 |
-| 能力面 | 默认组合极简（本地 bash 等，无 skills、无压缩；可 `cordis` 定制） | 部署默认 agent preset 全部能力（工具/技能/沙箱策略） |
-| 平台 | Linux x64/arm64、macOS 14+ arm64；**不支持 Windows** | 客户端任意语言/平台（含 Windows PowerShell） |
-| 隔离性 | `danger-full-access`，仅建议容器/可丢弃环境 | 继承部署沙箱与审批策略；提问与授权可转发给客户端，用 HTTP 应答 |
-| 典型场景 | Python 脚本跑**一次性隔离任务**，无长期部署 | 第三方连接**你正在运行的部署**：跨语言、统一鉴权限流审计、续聊 UI 会话 |
-
-一次性 Python 任务 → 官方 SDK；持续部署、跨语言、续聊 UI 会话 → 本网关。**别混用**：DeepSeek 的 `sk-…` 密钥打不开本网关；`pip install deepseek-harness-sdk` 也连不上本网关。
-
-## 扩展性（面向其他插件）
-
-网关在 Cordis 事件总线上发布以下事件，其他宿主插件用 `ctx.on(...)` 订阅（监听器随 fiber 回收，异常不影响网关）：
-
-- `gateway/session-created` → `{ sessionId, mode: 'created' | 'live' | 'resumed', workspace, cwd }`
-- `gateway/session-released` → `{ sessionId, mode, disposed }`
-- `gateway/message` → `{ sessionId, messageId, text, usage }`（每条助手回复提交时；`usage` 为该步 token 用量，无则 `null`）
-- `gateway/turn-end` → `{ sessionId, turn, reason, detail, usage, provider, model }`（`usage` 为整回合各步之和，全程无上报则 `null`）
-- `gateway/question-asked` → `{ sessionId, questionId, questions }`、`gateway/question-answered` → `{ sessionId, questionId, answers }`
-- `gateway/approval-pending` → `{ sessionId, decisionId, toolName, callId, reason }`、`gateway/approval-decided` → `{ sessionId, decisionId, outcome }`
-
-典型用途：审计落盘、外部告警、转发 IM/Webhook、自定义限流旁路。
-
-## 开发与测试
-
-```sh
-pnpm install
-pnpm build        # tsc
-pnpm smoke        # 对运行中的网关跑端到端冒烟
-```
-
-冒烟 env：`DSH_AGW_BASE`（默认 `http://127.0.0.1:3080/api-gw/v1`）、`DSH_AGW_KEY`（缺省则领一把）、`DSH_AGW_PROMPT`。CI（`.github/workflows/ci.yml`）跑构建 + 语法检查，可用仓库 vars 开启可选冒烟。
-
-## 路线图
-
-按「先安全、再体验、后生态」排序；各版本独立发布。
-
-| 版本 | 主题 | 内容 |
-| --- | --- | --- |
-| **v0.1.0** | 基线（当前） | REST+SSE、设置卡片、reasoning/text 分离、工作区归属、会话接管、跨平台文档 |
-| **v0.2.0** | 多租户安全 ★ | 多密钥 CRUD/吊销、按密钥限流（429 + `Retry-After`）、**工作区模型：每密钥独立 + 共享协作（`shared`/`isolated`）**、按密钥审批策略、审计（每密钥请求/会话/token 用量）、会话持久化（重启恢复） |
-| **v0.3.0** | 管理界面 | 完整 admin 设置页（密钥/限额/工作区绑定、会话监控、用量审计、软开关）+ typert `@Remote` 配置面 + per-key preset 选择 |
-| **v0.4.0** | 双工流式 | `webServer.registerUpgrade` WebSocket 全双工；SSE 保留为轻量选项。互动问答与授权已在 SSE + POST 上跑通，双工给的是更低的往返延迟和服务端发起的取消 |
-| **v0.5.0** | 生态与运维 | Python/Node HTTP 薄客户端（OpenAPI 生成——**不是**官方嵌入式 SDK，见上文）、部署指南（反代+TLS、Docker Compose）、指标/遥测导出、OpenAPI 生成进 CI |
-
-**不做/缓做**：多进程横向扩展、内置 TLS 终止（反代职责）、OAuth/OIDC（按密钥模型稳定后再议）。
+删除组合里的插件行（可选 `dsh plugin remove dsh-api-gateway`），重启。
 
 ## License
 
