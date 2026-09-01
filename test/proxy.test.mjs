@@ -8,6 +8,13 @@ import plugin from '../lib/index.js'
 
 // ---- pure helpers ----
 
+test('apiKeys carries the secret role on the array itself', () => {
+  // Item-level role('secret') is not honoured by settings redaction; only the
+  // top-level field role hides the value from settings.describe.
+  const field = plugin.Config.dict.apiKeys
+  assert.equal(field?.meta?.role, 'secret', 'the array node must be role-secret')
+})
+
 test('proxy url builders', () => {
   assert.equal(unaryProxyUrl('http://127.0.0.1:3080/api', 'session.list'), 'http://127.0.0.1:3080/api/session.list')
   assert.equal(unaryProxyUrl('http://127.0.0.1:3080/api/', 'session.list'), 'http://127.0.0.1:3080/api/session.list')
