@@ -151,15 +151,165 @@ paths:
                 type: string
                 description: >-
                   'data: ' JSON lines with kind:
-                  hello|user|chunk|message|tool_call|tool_result|approval_asked|approval_decided|approval_policy|turn_start|turn_end.
+                  hello|user|chunk|message|tool_call|tool_result|question_asked|question_resolved|approval_pending|approval_resolved|approval_asked|approval_decided|approval_policy|turn_start|turn_end.
                   A `message` frame carries `usage` when the adapter reported token accounting
                   ({ inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?, reasoningTokens? }), else null.
-                  `approval_asked` ({ id, toolName, callId, reason }) means the turn is STOPPED on a
-                  permission decision rather than merely slow; exactly one `approval_decided`
+                  Every frame mapped from the session log carries `seq`. The four frames the gateway
+                  originates itself -- question_asked, question_resolved, approval_pending,
+                  approval_resolved -- carry NO `seq`: they are live negotiation rather than durable
+                  transcript, and a client that dedupes replayed history by seq must not drop them.
+                  Whatever is still open is repeated in `hello` as `questions` and `approvals`, which
+                  is how a reconnecting client recovers.
+                  `question_asked` ({ sessionId, questionId, questions[] }) means a tool call is
+                  blocked until POST .../questions/{questionId}/answer (or /cancel); it appears only
+                  when the gateway owns the userQuestions provider (config `questions: gateway`).
+                  `approval_pending` ({ sessionId, decisionId, toolName, callId, reason }) likewise
+                  waits for POST .../approvals/{decisionId}/decide under `approvals: gateway`.
+                  `question_resolved` / `approval_resolved` ({ ..., outcome }) close an ask for every
+                  listener, including when someone else answered first.
+                  The audit frames are relayed regardless of those settings: `approval_asked`
+                  ({ id, toolName, callId, reason }) means the turn is STOPPED on a permission
+                  decision rather than merely slow, and exactly one `approval_decided`
                   ({ id, outcome: allowed-once|rejected|cancelled|unavailable }) follows it, where
-                  `unavailable` is the fail-closed outcome when no answerer is composed. Read-only
-                  audit: deciding over the API arrives in v0.2.0. `approval_policy`
-                  ({ policy: ask|never, source }) reports a session policy switch.
+                  `unavailable` is the fail-closed outcome when no answerer is composed.
+                  `approval_policy` ({ policy: ask|never, source }) reports a session policy switch.
+  /api-gw/v1/sessions/{id}/questions:
+    get:
+      summary: Interactive questions awaiting an answer, and who owns answering them
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: >-
+            { sessionId, answeredBy: gateway|host, questions: [ { questionId, askedAt, questions[] } ] }.
+            `answeredBy: host` means this deployment's own UI owns the provider slot, so nothing here
+            can be answered over the API.
+        '404': { description: session_not_found — adopt it first }
+  /api-gw/v1/sessions/{id}/questions/{questionId}/answer:
+    post:
+      summary: Answer one interactive question, unblocking the tool call that waits on it
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: questionId
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answers]
+              properties:
+                answers:
+                  type: array
+                  description: >-
+                    One entry per question asked -- all of them. `selected` holds option labels
+                    (not indexes); `custom` is free text, and the only way to answer a question
+                    that offered no options.
+                  items:
+                    type: object
+                    required: [id]
+                    properties:
+                      id: { type: string }
+                      selected: { type: array, items: { type: string } }
+                      custom: { type: string }
+      responses:
+        '200': { description: '{ ok, sessionId, questionId, outcome: answered }' }
+        '400':
+          description: >-
+            invalid_answer — a missing question, an unknown id, an option that was not offered, or
+            several selections on a single-select question. The question stays open: this answer
+            becomes a tool result the model acts on, so a partial or invented one is refused rather
+            than forwarded.
+        '404': { description: question_not_found — already answered, cancelled, or the turn ended }
+  /api-gw/v1/sessions/{id}/questions/{questionId}/cancel:
+    post:
+      summary: Decline to answer; the tool call fails and the model carries on knowing that
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: questionId
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: '{ ok, sessionId, questionId, outcome: cancelled }' }
+        '404': { description: question_not_found }
+  /api-gw/v1/sessions/{id}/approvals:
+    get:
+      summary: Permission prompts awaiting a decision
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: '{ sessionId, decidedBy: gateway|host, approvals: [ { decisionId, toolName, callId, reason, askedAt } ] }'
+        '404': { description: session_not_found — adopt it first }
+  /api-gw/v1/sessions/{id}/approvals/{decisionId}/decide:
+    post:
+      summary: Decide one permission prompt
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: decisionId
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-API-Key
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome]
+              properties:
+                outcome:
+                  type: string
+                  enum: [allowed-once, rejected]
+                  description: >-
+                    `allowed-once` is the vocabulary's only grant and covers exactly the call being
+                    decided -- there is no way from here to widen a session's policy or to remember a
+                    decision. `cancelled` and `unavailable` are deliberately not accepted: they
+                    belong to whoever withdrew the request and to the fail-closed default, and
+                    accepting them would let a client record a refusal as an infrastructure failure.
+      responses:
+        '200': { description: '{ ok, sessionId, decisionId, outcome }' }
+        '400': { description: invalid_outcome }
+        '404': { description: approval_not_found — already decided, withdrawn, or the turn ended }
   /api-gw/v1/sessions/discover:
     get:
       summary: List all sessions (id/title/cwd/live/persisted) — no content

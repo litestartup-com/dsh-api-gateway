@@ -53,21 +53,37 @@ export interface Config {
     /** Include internal error messages in HTTP responses (helpful locally, noisy publicly). */
     exposeErrors: boolean;
     /**
-     * What happens when an agent this gateway drives asks an interactive question.
+     * Who answers `ask_user_question` for the sessions this gateway drives.
      *
-     * - `conversation` (default) -- the question is handed back to the model with
-     *   instructions to ask in the reply and end the turn. An API client answers
-     *   it as an ordinary next message, so the turn closes on time and its cost
-     *   and duration stay meaningful.
-     * - `host` -- leave the question to whatever the deployment provides, i.e. the
-     *   Web GUI. Correct only when someone is actually watching that GUI: with no
-     *   answerer the turn blocks until it is cancelled.
+     * - `host` (default) -- leave the deployment's own provider alone. In a
+     *   profile that serves the Web GUI that is the browser, so a card appears
+     *   there and the turn waits for a click nobody outside that GUI can make.
+     * - `gateway` -- offer to be the provider, so the question is relayed to API
+     *   clients as a `question_asked` frame and answered over HTTP. A remote
+     *   client becomes the human the tool waits for; the agent, the tool and the
+     *   model are untouched.
      *
-     * Approvals are deliberately NOT covered here. A question is the model's own
-     * choice and can be re-asked as text; an approval is raised by the runtime
-     * mid-tool-call, so there is nothing to reword and no way to defer it.
+     * `gateway` is an OFFER, not a seizure: the slot holds exactly one provider,
+     * and a deployment whose GUI already owns it keeps it (see
+     * `ensureQuestionOwnership`). To make the slot free, disable the
+     * `@deepseek-ai/dsh-host-apiproxy` row -- that is the browser UI's backend,
+     * not the HTTP carrier, so the gateway itself keeps serving.
      */
-    questionMode: 'conversation' | 'host';
+    questions: 'host' | 'gateway';
+    /**
+     * Who decides permission prompts for the sessions this gateway drives.
+     *
+     * - `host` (default) -- leave them to the deployment's own answerers.
+     * - `gateway` -- relay each one as an `approval_pending` frame and wait for a
+     *   client to decide it over HTTP.
+     *
+     * Needs no free slot, unlike `questions`: approval answerers COMPOSE, so this
+     * can be turned on in a profile that also serves the Web GUI. Only decisions
+     * for sessions this gateway drives are claimed; anything else is passed on
+     * untouched, and the only grant that can be sent is the one-shot
+     * `allowed-once`, so answering can never widen a session's policy.
+     */
+    approvals: 'host' | 'gateway';
     /** SSE heartbeat interval in ms; 0 disables. */
     sseHeartbeatMs: number;
     /** Request body read timeout in ms. */
@@ -87,7 +103,8 @@ export declare const Config: z<Schemastery.ObjectS<{
     allowAdopt: z<boolean, boolean>;
     corsOrigin: z<string | string[], string | string[]>;
     exposeErrors: z<boolean, boolean>;
-    questionMode: z<"conversation" | "host", "conversation" | "host">;
+    questions: z<"host" | "gateway", "host" | "gateway">;
+    approvals: z<"host" | "gateway", "host" | "gateway">;
     sseHeartbeatMs: z<number, number>;
     bodyTimeoutMs: z<number, number>;
 }>, Schemastery.ObjectT<{
@@ -104,7 +121,8 @@ export declare const Config: z<Schemastery.ObjectS<{
     allowAdopt: z<boolean, boolean>;
     corsOrigin: z<string | string[], string | string[]>;
     exposeErrors: z<boolean, boolean>;
-    questionMode: z<"conversation" | "host", "conversation" | "host">;
+    questions: z<"host" | "gateway", "host" | "gateway">;
+    approvals: z<"host" | "gateway", "host" | "gateway">;
     sseHeartbeatMs: z<number, number>;
     bodyTimeoutMs: z<number, number>;
 }>>;
@@ -124,7 +142,8 @@ declare const _default: {
         allowAdopt: z<boolean, boolean>;
         corsOrigin: z<string | string[], string | string[]>;
         exposeErrors: z<boolean, boolean>;
-        questionMode: z<"conversation" | "host", "conversation" | "host">;
+        questions: z<"host" | "gateway", "host" | "gateway">;
+        approvals: z<"host" | "gateway", "host" | "gateway">;
         sseHeartbeatMs: z<number, number>;
         bodyTimeoutMs: z<number, number>;
     }>, Schemastery.ObjectT<{
@@ -141,7 +160,8 @@ declare const _default: {
         allowAdopt: z<boolean, boolean>;
         corsOrigin: z<string | string[], string | string[]>;
         exposeErrors: z<boolean, boolean>;
-        questionMode: z<"conversation" | "host", "conversation" | "host">;
+        questions: z<"host" | "gateway", "host" | "gateway">;
+        approvals: z<"host" | "gateway", "host" | "gateway">;
         sseHeartbeatMs: z<number, number>;
         bodyTimeoutMs: z<number, number>;
     }>>;

@@ -41,7 +41,8 @@ interface GatewayConfig {
   allowAdopt?: boolean
   corsOrigin?: string | string[]
   exposeErrors?: boolean
-  questionMode?: 'conversation' | 'host'
+  questions?: 'host' | 'gateway'
+  approvals?: 'host' | 'gateway'
   sseHeartbeatMs?: number
   bodyTimeoutMs?: number
   adminKey?: string
@@ -150,7 +151,8 @@ const FIELDS: Field[] = [
   { key: 'allowDiscover', kind: 'toggle' },
   { key: 'allowAdopt', kind: 'toggle' },
   { key: 'exposeErrors', kind: 'toggle' },
-  { key: 'questionMode', kind: 'select', options: [{ value: 'conversation', label: 'conversation' }, { value: 'host', label: 'host' }] },
+  { key: 'questions', kind: 'select', options: [{ value: 'host', label: 'host' }, { value: 'gateway', label: 'gateway' }] },
+  { key: 'approvals', kind: 'select', options: [{ value: 'host', label: 'host' }, { value: 'gateway', label: 'gateway' }] },
   { key: 'corsOrigin', kind: 'text', placeholder: '*' },
   { key: 'sseHeartbeatMs', kind: 'number', placeholder: '30000' },
   { key: 'bodyTimeoutMs', kind: 'number', placeholder: '30000' },

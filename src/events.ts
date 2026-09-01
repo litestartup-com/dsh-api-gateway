@@ -172,4 +172,13 @@ export const mapEvents = (events: readonly unknown[]): GatewayEvent[] => {
   return out
 }
 
-export const sseFrame = (payload: GatewayEvent): string => 'data: ' + JSON.stringify(payload) + '\n\n'
+/**
+ * One SSE frame.
+ *
+ * Takes anything with a `kind`, not only a mapped `GatewayEvent`: the gateway
+ * also sends frames of its own (an interactive question, a pending approval)
+ * which have no position in the durable log and therefore NO `seq`. That absence
+ * is load-bearing -- a client that dedupes replayed history by seq, as it should,
+ * would drop a live frame that claimed a seq of 0.
+ */
+export const sseFrame = (payload: { kind: string; [key: string]: unknown }): string => 'data: ' + JSON.stringify(payload) + '\n\n'

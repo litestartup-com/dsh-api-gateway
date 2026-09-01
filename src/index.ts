@@ -24,13 +24,14 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 // Value import, not type-only: it also carries the `ctx.userQuestions`
-// augmentation, and the gateway constructs the service inside its own scope.
-import { UserQuestionError, UserQuestionService } from '@deepseek-ai/dsh-user-questions'
+// augmentation, and the error class is thrown from the gateway's provider.
+import { UserQuestionError } from '@deepseek-ai/dsh-user-questions'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createRequire } from 'node:module'
 import z from '@deepseek-ai/schemastery'
 import { eventPayload, mapEvents, normalizeUsage, sseFrame, sumUsage, type GatewayEvent, type TokenUsageJson } from './events.js'
 import { decodeBody, mapHeader, provisionDecision, resolveCorsOrigin, routeSegments } from './http.js'
+import { validateAnswers, wireQuestions, type WireAnswer, type WireQuestion } from './questions.js'
 
 /** Single source of truth for the version advertised by the service index. */
 const VERSION: string = (() => {
@@ -73,21 +74,37 @@ export interface Config {
   /** Include internal error messages in HTTP responses (helpful locally, noisy publicly). */
   exposeErrors: boolean
   /**
-   * What happens when an agent this gateway drives asks an interactive question.
+   * Who answers `ask_user_question` for the sessions this gateway drives.
    *
-   * - `conversation` (default) -- the question is handed back to the model with
-   *   instructions to ask in the reply and end the turn. An API client answers
-   *   it as an ordinary next message, so the turn closes on time and its cost
-   *   and duration stay meaningful.
-   * - `host` -- leave the question to whatever the deployment provides, i.e. the
-   *   Web GUI. Correct only when someone is actually watching that GUI: with no
-   *   answerer the turn blocks until it is cancelled.
+   * - `host` (default) -- leave the deployment's own provider alone. In a
+   *   profile that serves the Web GUI that is the browser, so a card appears
+   *   there and the turn waits for a click nobody outside that GUI can make.
+   * - `gateway` -- offer to be the provider, so the question is relayed to API
+   *   clients as a `question_asked` frame and answered over HTTP. A remote
+   *   client becomes the human the tool waits for; the agent, the tool and the
+   *   model are untouched.
    *
-   * Approvals are deliberately NOT covered here. A question is the model's own
-   * choice and can be re-asked as text; an approval is raised by the runtime
-   * mid-tool-call, so there is nothing to reword and no way to defer it.
+   * `gateway` is an OFFER, not a seizure: the slot holds exactly one provider,
+   * and a deployment whose GUI already owns it keeps it (see
+   * `ensureQuestionOwnership`). To make the slot free, disable the
+   * `@deepseek-ai/dsh-host-apiproxy` row -- that is the browser UI's backend,
+   * not the HTTP carrier, so the gateway itself keeps serving.
    */
-  questionMode: 'conversation' | 'host'
+  questions: 'host' | 'gateway'
+  /**
+   * Who decides permission prompts for the sessions this gateway drives.
+   *
+   * - `host` (default) -- leave them to the deployment's own answerers.
+   * - `gateway` -- relay each one as an `approval_pending` frame and wait for a
+   *   client to decide it over HTTP.
+   *
+   * Needs no free slot, unlike `questions`: approval answerers COMPOSE, so this
+   * can be turned on in a profile that also serves the Web GUI. Only decisions
+   * for sessions this gateway drives are claimed; anything else is passed on
+   * untouched, and the only grant that can be sent is the one-shot
+   * `allowed-once`, so answering can never widen a session's policy.
+   */
+  approvals: 'host' | 'gateway'
   /** SSE heartbeat interval in ms; 0 disables. */
   sseHeartbeatMs: number
   /** Request body read timeout in ms. */
@@ -108,7 +125,8 @@ export const Config = z.object({
   allowAdopt: z.boolean().default(true),
   corsOrigin: z.union([z.string(), z.array(z.string())]).default('*'),
   exposeErrors: z.boolean().default(true),
-  questionMode: z.union([z.const('conversation'), z.const('host')]).default('conversation'),
+  questions: z.union([z.const('host'), z.const('gateway')]).default('host'),
+  approvals: z.union([z.const('host'), z.const('gateway')]).default('host'),
   sseHeartbeatMs: z.natural().default(30_000),
   bodyTimeoutMs: z.natural().default(30_000),
 })
@@ -402,6 +420,13 @@ export default {
      */
     const releaseSession = (sessionId: string, entry: SessionEntry): { disposed: boolean } => {
       releasePump(entry)
+      // A question whose session is being released can never be answered, and the
+      // tool call waiting on it would otherwise hold the turn open against a
+      // session nobody is left to read.
+      abandonQuestions(sessionId, `session ${sessionId} was released before the question was answered`)
+      // Cancelled, which the approval vocabulary treats as a closed non-grant:
+      // a decision nobody can make must never read as permission.
+      abandonApprovals(sessionId)
       for (const res of Array.from(entry.subscribers)) { try { res.end() } catch { /* noop */ } }
       entry.subscribers.clear()
       if (entry.owned) {
@@ -449,78 +474,259 @@ export default {
 
     // ---- interactive questions ----
 
-    /**
-     * What the model is told when it reaches for an interactive question card.
-     *
-     * It is written AT the model, because that is who receives it: the tool
-     * reports a failed call, and this text is the whole of what the model has to
-     * go on. So it does not merely refuse -- it names the alternative, which is
-     * the one thing a bare refusal would leave the model to guess.
-     */
-    const NO_ANSWERER_HINT = [
-      'This session is driven remotely through the API gateway, so nobody can see or click an interactive question card here.',
-      'Ask in the conversation instead: put the question and its options in your reply, end the turn, and read the human\'s next message as the answer.',
-    ].join(' ')
+    /** A question this gateway has relayed to its clients and is still waiting on. */
+    interface PendingQuestion {
+      id: string
+      sessionId: string
+      questions: WireQuestion[]
+      askedAt: number
+      resolve: (answer: { answers: WireAnswer[] }) => void
+      reject: (error: Error) => void
+      detachAbort: () => void
+    }
+
+    const pendingQuestions = new Map<string, PendingQuestion>()
+
+    const pendingFor = (sessionId: string) => Array.from(pendingQuestions.values())
+      .filter((pending) => pending.sessionId === sessionId)
+      .map((pending) => ({ questionId: pending.id, askedAt: pending.askedAt, questions: pending.questions }))
 
     /**
-     * A scope whose `userQuestions` provider hands the question back to the model.
+     * A frame the gateway itself originates, rather than one mapped from the
+     * session log.
      *
-     * Why a scope at all: the service holds exactly ONE provider in an instance
-     * field and throws DUPLICATE_PROVIDER on a second registration, so the
-     * gateway cannot register alongside a deployment whose GUI already owns that
-     * slot -- and must not, since stealing the slot would send GUI users'
-     * question cards to an HTTP client instead. `ctx.isolate()` gives the
-     * gateway a private slot; the host's is left exactly as it was
-     * (test/questions.test.mjs pins both halves of that claim).
+     * Carries NO `seq`, and that absence is deliberate rather than an omission:
+     * an interactive question is a live negotiation, not an entry in the durable
+     * transcript, so it has no position to report. A fabricated one would be
+     * worse than none -- these frames bypass `deliver()` precisely because it
+     * dedupes and journals BY seq, and a client replaying history (manager does)
+     * drops anything whose seq it has already seen. A live question stamped 0
+     * would be discarded by every such client.
      *
-     * Why one scope for the whole plugin rather than one per session: the
-     * provider is stateless -- it never collects an answer -- so a per-session
-     * scope would accumulate a service instance and a closure per session for
-     * the life of the plugin, and buy nothing.
+     * Recovery is `hello` instead, which carries whatever is still open.
      */
-    let questionScope: Context | null = null
-    let questionScopeFailed = false
-    const downgradingScope = (): Context | null => {
-      if (questionScope !== null) return questionScope
-      // Attempted once. A deployment that cannot give us the scope will not
-      // start giving us one on the next request, and retrying per session would
-      // log the same failure forever.
-      if (questionScopeFailed) return null
-      try {
-        const scope = ctx.isolate('userQuestions')
-        new UserQuestionService(scope)
-        scope.userQuestions.registerProvider({
-          ask: async (request) => {
-            ctx.logger?.debug?.(`[dsh-api-gw] question downgraded to conversation (${request.questions.length} question(s))`)
-            // Thrown, not answered: a fabricated answer would put words in the
-            // human's mouth, and any real answer here would be a lie about who
-            // was asked. The tool turns this into a failed call, which is how
-            // the hint reaches the model.
-            throw new UserQuestionError(NO_ANSWERER_HINT, 'NO_INTERACTIVE_ANSWERER')
-          },
-        })
-        questionScope = scope
-        return scope
-      } catch (error) {
-        // Non-fatal by design: this is a safeguard against a hang, not a
-        // prerequisite for talking to an agent. A Harness too old to provide
-        // the service, or one that refuses the scope, must still get sessions.
-        questionScopeFailed = true
-        ctx.logger?.warn?.(`[dsh-api-gw] questionMode 'conversation' unavailable, leaving questions to the host: ${String(error)}`)
-        return null
+    const gatewayFrame = (kind: string, fields: Record<string, unknown>): { kind: string; [key: string]: unknown } => ({ kind, ...fields })
+
+    /**
+     * Take a pending question off the registry, then announce it is closed.
+     *
+     * Removal happens BEFORE the promise is settled so the first claimant wins:
+     * two clients answering the same card, or an answer racing the turn's
+     * cancellation, must produce exactly one resolution of the tool call.
+     */
+    const claimQuestion = (pending: PendingQuestion, outcome: 'answered' | 'cancelled') => {
+      pendingQuestions.delete(pending.id)
+      pending.detachAbort()
+      const entry = apiSessions.get(pending.sessionId)
+      if (entry !== undefined) {
+        writeToSubscribers(entry, sseFrame(gatewayFrame('question_resolved', { sessionId: pending.sessionId, questionId: pending.id, outcome })))
+      }
+    }
+
+    /** Fail every question waiting on a session that is going away. */
+    const abandonQuestions = (sessionId: string, why: string) => {
+      for (const pending of Array.from(pendingQuestions.values())) {
+        if (pending.sessionId !== sessionId) continue
+        claimQuestion(pending, 'cancelled')
+        pending.reject(new UserQuestionError(why, 'ASK_ABORTED'))
       }
     }
 
     /**
-     * The context that owns agents this gateway creates or resumes.
+     * The gateway's own `userQuestions` provider: relay to clients, wait for one
+     * to answer over HTTP.
      *
-     * Read per session rather than once, so flipping `questionMode` at runtime
-     * applies to new sessions; sessions already running keep the scope their
-     * agent was built in, because an agent cannot be moved between scopes.
+     * Nothing about the agent, the tool or the model changes -- `ask()` still
+     * blocks the tool call until a human answers. The only thing that moves is
+     * WHERE that human sits.
      */
-    const agentContext = (): Context => {
-      if (cfg.questionMode !== 'conversation') return ctx
-      return downgradingScope() ?? ctx
+    const askOverHttp = (request: { questions?: readonly unknown[]; agent?: { id?: string }; signal?: AbortSignal }) => {
+      const sessionId = typeof request.agent?.id === 'string' ? request.agent.id : undefined
+      if (sessionId === undefined) {
+        return Promise.reject(new UserQuestionError('the API gateway routes questions per session, and this ask names no agent', 'ASK_MISSING_AGENT'))
+      }
+      const entry = apiSessions.get(sessionId)
+      if (entry === undefined) {
+        // Fails closed, and fast. Owning the slot means being asked on behalf of
+        // sessions this gateway does not drive too -- a CLI run, another
+        // plugin's agent. No client is listening for those, and a promise that
+        // never settles is the exact hang this feature exists to remove.
+        return Promise.reject(new UserQuestionError(`session ${sessionId} is not driven by the API gateway, so no client of it can answer`, 'ASK_NO_ANSWERER'))
+      }
+      const questions = wireQuestions(request.questions ?? [])
+      if (questions.length === 0) {
+        return Promise.reject(new UserQuestionError('no question survived wire mapping (each needs an id and question text)', 'EMPTY_QUESTIONS'))
+      }
+      return new Promise<{ answers: WireAnswer[] }>((resolve, reject) => {
+        const id = randomToken('apigw-q-', 16)
+        const signal = request.signal
+        const onAbort = () => {
+          const pending = pendingQuestions.get(id)
+          if (pending === undefined) return
+          claimQuestion(pending, 'cancelled')
+          reject(new UserQuestionError('ask_user_question was aborted before the human answered', 'ASK_ABORTED'))
+        }
+        pendingQuestions.set(id, {
+          id,
+          sessionId,
+          questions,
+          askedAt: Date.now(),
+          resolve,
+          reject,
+          detachAbort: () => { if (signal !== undefined) signal.removeEventListener('abort', onAbort) },
+        })
+        signal?.addEventListener('abort', onAbort, { once: true })
+        // Sent, not journalled: a client that is not connected right now picks
+        // this up from `hello` when it reconnects.
+        writeToSubscribers(entry, sseFrame(gatewayFrame('question_asked', { sessionId, questionId: id, questions })))
+        emitGatewayEvent('gateway/question-asked', { sessionId, questionId: id, questions })
+      })
+    }
+
+    /** Settled the first time a session is created or adopted; see `ensureQuestionOwnership`. */
+    let questionOwnership: 'unknown' | 'gateway' | 'host' = 'unknown'
+    let disposeQuestionProvider: (() => void) | null = null
+
+    /**
+     * Offer -- once -- to be the deployment's question provider.
+     *
+     * Called when the first session appears rather than at load, and that timing
+     * IS the safety argument. The slot holds one provider and a second
+     * `registerProvider` throws; the browser UI's backend
+     * (`@deepseek-ai/dsh-host-apiproxy`) does not guard its own call, so a
+     * gateway that won this race would not merely lose questions -- it would
+     * fail that plugin's load and take the GUI down with it. By the time an HTTP
+     * request has reached this code the whole host tree is up, so whoever wants
+     * the slot already holds it and the loser here is always us.
+     *
+     * Standing down is therefore normal, not a fault: it means the deployment
+     * has a GUI, and questions belong to it.
+     */
+    const ensureQuestionOwnership = () => {
+      if (questionOwnership !== 'unknown') return
+      // Left 'unknown' on purpose: flipping the setting later must still get its
+      // chance at the next session.
+      if (cfg.questions !== 'gateway') return
+      const service = ctx.get('userQuestions') as { registerProvider?: (provider: { ask: (request: never) => Promise<{ answers: WireAnswer[] }> }) => () => void } | undefined
+      if (service?.registerProvider === undefined) {
+        questionOwnership = 'host'
+        ctx.logger?.warn?.('[dsh-api-gw] questions: "gateway" but this deployment provides no userQuestions service; leaving questions alone')
+        return
+      }
+      try {
+        disposeQuestionProvider = service.registerProvider({ ask: (request) => askOverHttp(request as never) })
+        questionOwnership = 'gateway'
+        ctx.logger?.info?.(`[dsh-api-gw] answering ask_user_question over the API (question_asked frames; POST ${cfg.prefix}/sessions/:id/questions/:questionId/answer)`)
+      } catch (error) {
+        questionOwnership = 'host'
+        ctx.logger?.warn?.(`[dsh-api-gw] questions stay with the host provider: ${String(error)}. Disable the @deepseek-ai/dsh-host-apiproxy row to free the slot (it is the browser UI's backend, not the HTTP carrier).`)
+      }
+    }
+
+    // ---- approvals ----
+
+    /** A permission decision this gateway has relayed and is still waiting on. */
+    interface PendingApproval {
+      id: string
+      sessionId: string
+      toolName: string
+      callId: string | null
+      reason: string | null
+      askedAt: number
+      settle: (outcome: ApprovalOutcome) => void
+      detachAbort: () => void
+    }
+
+    const pendingApprovals = new Map<string, PendingApproval>()
+
+    const approvalsFor = (sessionId: string) => Array.from(pendingApprovals.values())
+      .filter((pending) => pending.sessionId === sessionId)
+      .map((pending) => ({ decisionId: pending.id, toolName: pending.toolName, callId: pending.callId, reason: pending.reason, askedAt: pending.askedAt }))
+
+    /** Same first-claimant discipline as questions: off the registry, then settled. */
+    const claimApproval = (pending: PendingApproval, outcome: ApprovalOutcome) => {
+      pendingApprovals.delete(pending.id)
+      pending.detachAbort()
+      const entry = apiSessions.get(pending.sessionId)
+      if (entry !== undefined) {
+        writeToSubscribers(entry, sseFrame(gatewayFrame('approval_resolved', { sessionId: pending.sessionId, decisionId: pending.id, outcome })))
+      }
+      pending.settle(outcome)
+    }
+
+    const abandonApprovals = (sessionId: string) => {
+      for (const pending of Array.from(pendingApprovals.values())) {
+        if (pending.sessionId === sessionId) claimApproval(pending, 'cancelled')
+      }
+    }
+
+    /**
+     * Answer permission prompts for the sessions this gateway drives.
+     *
+     * Unlike questions this needs no slot: `approval/request` is a waterfall, so
+     * answerers COMPOSE. A listener either returns an outcome (claiming the
+     * decision) or calls `next()` to pass it on, which is why this can be added
+     * to a deployment that already has a GUI answerer without displacing it.
+     *
+     * Two rules keep it from answering for anyone else:
+     * - a session this gateway does not drive is passed straight to `next()`,
+     *   because no client of ours is watching it;
+     * - only `allowed-once` and `rejected` can be sent, and `allowed-once` is the
+     *   vocabulary's sole grant, so answering can never widen a session's policy
+     *   or persist permission beyond the one call being decided.
+     */
+    type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+    interface ApprovalRequestLike {
+      readonly agent?: { readonly id?: string }
+      readonly toolName?: string
+      readonly callId?: string
+      readonly reason?: string
+      readonly signal?: AbortSignal
+    }
+
+    // Cast rather than typed: the approval Events augmentation ships with
+    // `@deepseek-ai/dsh-user-approval`, and depending on that package for one
+    // event name would tie this plugin to a service it treats as optional.
+    // Registered only where the service exists, so a deployment without
+    // approvals is untouched.
+    if (ctx.get('approval') !== undefined) {
+      (ctx as unknown as { on: (event: string, listener: (req: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>) => void }).on(
+        'approval/request',
+        (req, next) => {
+          const sessionId = typeof req.agent?.id === 'string' ? req.agent.id : undefined
+          if (cfg.approvals !== 'gateway' || sessionId === undefined) return next()
+          const entry = apiSessions.get(sessionId)
+          if (entry === undefined) return next()
+          if (req.signal?.aborted === true) return Promise.resolve('cancelled')
+          return new Promise<ApprovalOutcome>((resolve) => {
+            const id = randomToken('apigw-ap-', 16)
+            const signal = req.signal
+            const onAbort = () => {
+              const pending = pendingApprovals.get(id)
+              if (pending !== undefined) claimApproval(pending, 'cancelled')
+            }
+            pendingApprovals.set(id, {
+              id,
+              sessionId,
+              toolName: typeof req.toolName === 'string' ? req.toolName : '',
+              callId: typeof req.callId === 'string' ? req.callId : null,
+              reason: typeof req.reason === 'string' ? req.reason : null,
+              askedAt: Date.now(),
+              settle: resolve,
+              detachAbort: () => { if (signal !== undefined) signal.removeEventListener('abort', onAbort) },
+            })
+            signal?.addEventListener('abort', onAbort, { once: true })
+            writeToSubscribers(entry, sseFrame(gatewayFrame('approval_pending', {
+              sessionId,
+              decisionId: id,
+              toolName: typeof req.toolName === 'string' ? req.toolName : '',
+              callId: typeof req.callId === 'string' ? req.callId : null,
+              reason: typeof req.reason === 'string' ? req.reason : null,
+            })))
+            emitGatewayEvent('gateway/approval-pending', { sessionId, decisionId: id, toolName: req.toolName ?? '', callId: req.callId ?? null, reason: req.reason ?? null })
+          })
+        },
+      )
     }
 
     // ---- workspace membership ----
@@ -644,6 +850,7 @@ export default {
 
     const createSession = async (body: Record<string, unknown>): Promise<SessionEntry> => {
       if (apiSessions.size >= cfg.maxSessions) throw new Error(`session cap reached (${cfg.maxSessions})`)
+      ensureQuestionOwnership()
       const options: { provider?: string; model?: string; maxTokens?: number } = {}
       if (typeof body.provider === 'string' && body.provider !== '') options.provider = body.provider
       if (typeof body.model === 'string' && body.model !== '') options.model = body.model
@@ -666,7 +873,7 @@ export default {
 
       // Proper ownership: the plugin fiber owns every created agent, so a
       // plugin stop or update tears each session down cleanly.
-      const handle = await boundedOrThrow(agentLoop.createAgent(agentContext(), {
+      const handle = await boundedOrThrow(agentLoop.createAgent(ctx, {
         sessionId,
         agentOptions: options,
         ...(cwd === undefined ? {} : { meta: { cwd } }),
@@ -722,6 +929,7 @@ export default {
       snapshot === null ? [] : mapEvents(snapshot.events)
 
     const adoptSession = async (sessionId: string): Promise<{ entry: SessionEntry; mode: SessionEntry['mode']; snapshot: { session: unknown; events: unknown[] } | null }> => {
+      ensureQuestionOwnership()
       const existing = apiSessions.get(sessionId)
       if (existing !== undefined) {
         return { entry: existing, mode: existing.mode, snapshot: await readSessionSnapshot(sessionId) }
@@ -745,9 +953,7 @@ export default {
       if (snapshot === null) throw new Error('session_not_found')
       let handle: { agent?: unknown; dispose?: () => Promise<void> | void }
       try {
-        // Same scope as a created session: a resumed agent is equally ours to
-        // drive, and equally has no human at a GUI.
-        handle = await agentLoop.resume(agentContext(), { resumeSessionId: sessionId }) as { agent?: unknown; dispose?: () => Promise<void> | void }
+        handle = await agentLoop.resume(ctx, { resumeSessionId: sessionId }) as { agent?: unknown; dispose?: () => Promise<void> | void }
       } catch (error) {
         throw new Error(`resume_failed: ${String((error as Error).message ?? error)}`)
       }
@@ -785,6 +991,11 @@ export default {
             { method: 'POST', path: cfg.prefix + '/sessions/:id/messages', auth: true },
             { method: 'GET', path: cfg.prefix + '/sessions/:id/stream', auth: true, note: 'SSE' },
             { method: 'GET', path: cfg.prefix + '/sessions/:id/history', auth: true },
+            { method: 'GET', path: cfg.prefix + '/sessions/:id/questions', auth: true, note: 'questions awaiting an answer' },
+            { method: 'POST', path: cfg.prefix + '/sessions/:id/questions/:questionId/answer', auth: true },
+            { method: 'POST', path: cfg.prefix + '/sessions/:id/questions/:questionId/cancel', auth: true },
+            { method: 'GET', path: cfg.prefix + '/sessions/:id/approvals', auth: true, note: 'permission prompts awaiting a decision' },
+            { method: 'POST', path: cfg.prefix + '/sessions/:id/approvals/:decisionId/decide', auth: true },
             { method: 'POST', path: cfg.prefix + '/sessions/:id/cancel', auth: true },
             { method: 'DELETE', path: cfg.prefix + '/sessions/:id', auth: true, note: 'frees the slot; history retained' },
           ],
@@ -966,7 +1177,10 @@ export default {
           'X-Accel-Buffering': 'no',
         })
         res.write('retry: 2000\n')
-        res.write(sseFrame({ kind: 'hello', seq: 0, sessionId: seg[1], status: entry.agent.status, mode: entry.mode, workspace: entry.workspace, log: helloLog } as unknown as GatewayEvent))
+        // `questions` rather than a replayed frame: an interactive question is
+        // live state, not history, and a reconnecting client needs the ones
+        // still open -- not a record that one was once asked.
+        res.write(sseFrame({ kind: 'hello', seq: 0, sessionId: seg[1], status: entry.agent.status, mode: entry.mode, workspace: entry.workspace, questions: pendingFor(seg[1]), approvals: approvalsFor(seg[1]), log: helloLog } as unknown as GatewayEvent))
         entry.subscribers.add(res)
         req.on('close', () => {
           entry.subscribers.delete(res)
@@ -993,6 +1207,73 @@ export default {
           return sendJson(res, 500, { error: 'delivery_failed', detail: errorDetail(error) })
         }
         return sendJson(res, 202, { ok: true, sessionId: seg[1], messageId: message.id, status: entry.agent.status })
+      }
+
+      // Questions awaiting an answer. Answering is what unblocks the tool call,
+      // so these are the only endpoints on this surface whose absence turns a
+      // working turn into a stuck one.
+      if (seg.length === 3 && seg[0] === 'sessions' && seg[2] === 'questions' && req.method === 'GET') {
+        if (!requireAuth(req, res)) return
+        if (apiSessions.get(seg[1]) === undefined) return sendJson(res, 404, { error: 'session_not_found', hint: `adopt the session first: POST ${cfg.prefix}/sessions/:id/adopt` })
+        return sendJson(res, 200, { sessionId: seg[1], answeredBy: questionOwnership === 'gateway' ? 'gateway' : 'host', questions: pendingFor(seg[1]) })
+      }
+
+      if (seg.length === 5 && seg[0] === 'sessions' && seg[2] === 'questions' && req.method === 'POST' && (seg[4] === 'answer' || seg[4] === 'cancel')) {
+        if (!requireAuth(req, res)) return
+        const pending = pendingQuestions.get(seg[3])
+        // Checked together: a question id from another session must read as "not
+        // here", never as an answerable one, or a client holding a stale id could
+        // settle a stranger's tool call.
+        if (pending === undefined || pending.sessionId !== seg[1]) {
+          return sendJson(res, 404, { error: 'question_not_found', hint: `it may have been answered, cancelled, or the turn ended. GET ${cfg.prefix}/sessions/:id/questions lists what is open.` })
+        }
+        if (seg[4] === 'cancel') {
+          claimQuestion(pending, 'cancelled')
+          // The tool call fails rather than receiving an invented answer: refusing
+          // to answer is information, and the model can act on it.
+          pending.reject(new UserQuestionError('the human declined to answer this question', 'ASK_ABORTED'))
+          return sendJson(res, 200, { ok: true, sessionId: seg[1], questionId: pending.id, outcome: 'cancelled' })
+        }
+        let body: Record<string, unknown> = {}
+        try { body = await readBody(req) } catch (error) { return sendJson(res, 400, { error: errorDetail(error) }) }
+        const checked = validateAnswers(pending.questions, body)
+        if (!checked.ok) {
+          // Rejected, and the question stays open: the answer goes into a tool
+          // result the model will act on, so a partial or invented one is worse
+          // than making the client try again.
+          return sendJson(res, 400, { error: 'invalid_answer', detail: checked.error, questions: pending.questions })
+        }
+        claimQuestion(pending, 'answered')
+        pending.resolve({ answers: checked.answers })
+        emitGatewayEvent('gateway/question-answered', { sessionId: seg[1], questionId: pending.id, answers: checked.answers })
+        return sendJson(res, 200, { ok: true, sessionId: seg[1], questionId: pending.id, outcome: 'answered' })
+      }
+
+      if (seg.length === 3 && seg[0] === 'sessions' && seg[2] === 'approvals' && req.method === 'GET') {
+        if (!requireAuth(req, res)) return
+        if (apiSessions.get(seg[1]) === undefined) return sendJson(res, 404, { error: 'session_not_found', hint: `adopt the session first: POST ${cfg.prefix}/sessions/:id/adopt` })
+        return sendJson(res, 200, { sessionId: seg[1], decidedBy: cfg.approvals, approvals: approvalsFor(seg[1]) })
+      }
+
+      if (seg.length === 5 && seg[0] === 'sessions' && seg[2] === 'approvals' && seg[4] === 'decide' && req.method === 'POST') {
+        if (!requireAuth(req, res)) return
+        const pending = pendingApprovals.get(seg[3])
+        if (pending === undefined || pending.sessionId !== seg[1]) {
+          return sendJson(res, 404, { error: 'approval_not_found', hint: `it may have been decided, withdrawn, or the turn ended. GET ${cfg.prefix}/sessions/:id/approvals lists what is open.` })
+        }
+        let body: Record<string, unknown> = {}
+        try { body = await readBody(req) } catch (error) { return sendJson(res, 400, { error: errorDetail(error) }) }
+        // Only the two a human can mean. 'cancelled' belongs to whoever withdrew
+        // the request and 'unavailable' is the fail-closed default -- neither is a
+        // decision, and accepting them here would let a client dress a refusal up
+        // as an infrastructure failure in the audit log.
+        const outcome = body.outcome
+        if (outcome !== 'allowed-once' && outcome !== 'rejected') {
+          return sendJson(res, 400, { error: 'invalid_outcome', hint: "outcome must be 'allowed-once' or 'rejected'" })
+        }
+        claimApproval(pending, outcome)
+        emitGatewayEvent('gateway/approval-decided', { sessionId: seg[1], decisionId: pending.id, outcome })
+        return sendJson(res, 200, { ok: true, sessionId: seg[1], decisionId: pending.id, outcome })
       }
 
       if (seg.length === 3 && seg[0] === 'sessions' && seg[2] === 'cancel' && req.method === 'POST') {
@@ -1053,7 +1334,13 @@ export default {
       mountRoute()
       return () => {
         if (disposeRoute !== null) { try { disposeRoute() } catch { /* noop */ } ; disposeRoute = null }
-        // Snapshotted: releaseSession deletes from the map it is iterating.
+        // Given back before the sessions go, so a reload finds the slot free and
+        // whoever is composed next -- including the next copy of this plugin --
+        // can take it.
+        if (disposeQuestionProvider !== null) { try { disposeQuestionProvider() } catch { /* noop */ } ; disposeQuestionProvider = null }
+        questionOwnership = 'unknown'
+        // Snapshotted: releaseSession deletes from the map it is iterating, and
+        // it is also what fails the questions each session still had open.
         for (const [sessionId, entry] of Array.from(apiSessions.entries())) releaseSession(sessionId, entry)
       }
     })

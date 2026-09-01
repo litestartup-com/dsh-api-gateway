@@ -55,7 +55,8 @@ dsh plugin --profile web add ./dsh-api-gateway-0.1.0.tgz
     allowAdopt: true            # POST /sessions/:id/adopt
     corsOrigin: '*'             # '*' 或具体域/列表（列表按请求 Origin 匹配回显）
     exposeErrors: true          # 错误响应是否带内部细节
-    questionMode: conversation  # conversation（写进回复里问）| host（交给 GUI）
+    questions: host             # host（交给部署自己的 UI）| gateway（转给 API 客户端答）
+    approvals: host             # host | gateway（授权请求转给 API 客户端批）
     sseHeartbeatMs: 30000       # SSE 心跳间隔（0 关闭）
     bodyTimeoutMs: 30000        # 请求体读取超时
 ```
@@ -119,8 +120,13 @@ curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
 | GET | `/sessions/discover` | API Key | 会话清单（id/title/cwd/live/persisted），不含内容 |
 | POST | `/sessions/:id/adopt` | API Key | 接管会话（`live` 共驾 / `resumed` 冷恢复），返回完整历史 |
 | POST | `/sessions/:id/messages` | API Key | 发消息（字符串或块数组） |
-| GET | `/sessions/:id/stream` | API Key | SSE：hello(回放)→chunk→message→tool_call/tool_result→approval_asked/approval_decided→turn_end |
+| GET | `/sessions/:id/stream` | API Key | SSE：hello(回放 + 待答项)→chunk→message→tool_call/tool_result→question_asked/approval_pending→turn_end |
 | GET | `/sessions/:id/history` | API Key | **任意**会话完整历史（只读） |
+| GET | `/sessions/:id/questions` | API Key | 待答的互动提问，并告诉你 `answeredBy` |
+| POST | `/sessions/:id/questions/:questionId/answer` | API Key | 回答提问（解除工具调用阻塞） |
+| POST | `/sessions/:id/questions/:questionId/cancel` | API Key | 拒答（工具调用失败，回合继续） |
+| GET | `/sessions/:id/approvals` | API Key | 待决定的授权请求 |
+| POST | `/sessions/:id/approvals/:decisionId/decide` | API Key | `allowed-once` 或 `rejected` |
 | POST | `/sessions/:id/cancel` | API Key | 中止当前回合 |
 | DELETE | `/sessions/:id` | API Key | 归还该会话占用的 `maxSessions` 名额 —— **历史保留** |
 | POST | `/admin/enable` | Admin Key | 运行时软开关 `{"enabled": bool}` |
@@ -153,35 +159,58 @@ curl -s -X POST $BASE/sessions/$SID/messages -H "Authorization: Bearer $KEY" \
 
 ## 互动式询问（提问与授权）
 
-Harness 的 agent 有两种停下来等人的方式，而它们不是同一个问题。网关有意分开处理。
+agent 有两种停下来等人的方式：`ask_user_question`（模型自己选的）和授权请求（运行时在工具调用中途发起的）。两者都会把回合挂住直到有人应答。网关要做的不是改变这一点——而是让「有人」可以是一个 API 客户端，而不只能是浏览器。
 
-### 提问降级为对话
+这里的一切**不碰 agent、不碰工具、不碰模型**。`ask()` 照旧阻塞工具调用，照旧返回人的回答；只有**那个人坐在哪里**变了。
 
-`ask_user_question` 工具会把工具调用挂住，直到有人在 Web GUI 里点那张卡片。对一个由 API 驱动的会话，那张卡片**无人可答**：回合会一直挂到被取消，它的耗时和成本就失去了意义，而无人值守的客户端（cron、CI、IM 桥）直接停死。
+### 提问：`questions: gateway`
 
-所以 `questionMode: conversation`（默认）给网关自有的会话装上一个 provider，把问题**交回给模型**，并告诉它：把问题写进回复，结束本回合。客户端用一次普通的 `POST /sessions/:id/messages` 就把它答了。没有新端点、没有协议状态、没有被挂住的回合——而且问题、答案、成本都像普通对话一样落在转录里。
+问题以帧的形式转发出去，用 HTTP 回答：
 
 ```jsonc
-// 客户端看到的：一次失败的工具调用带着那句指示，紧接着一条普通回复
-{ "kind": "tool_result", "isError": true, "text": "This session is driven remotely through the API gateway…" }
-{ "kind": "message", "text": "这里两个选择：（1）保留旧记录，（2）删掉。你选哪个？" }
+// SSE，没有 `seq`——这是实时协商，不是持久日志里的一条
+{ "kind": "question_asked", "sessionId": "...", "questionId": "apigw-q-…",
+  "questions": [ { "id": "q1", "question": "旧记录删掉？",
+                   "options": [ { "label": "保留" }, { "label": "删掉", "description": "不可逆" } ] } ] }
 ```
 
-只对**网关自己创建或恢复的会话**生效。共驾的 GUI 会话（`live`）保留部署自己的 provider：那边确实有人在看浏览器，抢走他的卡片比不接更糟。想完全不用这个行为：`questionMode: host`。
+```bash
+curl -X POST "$GW/sessions/$SID/questions/$QID/answer" -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{"answers":[{"id":"q1","selected":["保留"]}]}'
+```
 
-> 一个很容易做错的实现细节：provider 槽位是单一字段，重复注册会抛 `DUPLICATE_PROVIDER`，所以网关**不会**跟 GUI 并列注册。它取一个私有服务作用域（`ctx.isolate`）在里面注册，宿主的槽位一字未动。`test/questions.test.mjs` 拿真实的包钉住了这两半。
+**每个问到的问题都必须答**，每个选项标签都必须是它给过的（或者配上 `custom` 自由文本）——因为这个答案会变成模型据以行动的工具结果，所以不完整或凭空的答案会被 `400` 拒掉，卡片继续开着。`POST …/questions/:id/cancel` 是拒答：工具调用失败，而这个信息模型能用。`question_resolved` 向所有监听者宣告它已关闭，所以先答的人赢。
 
-### 授权：看得见，还不能应答
+**拿槽位是「请求」，不是「抢」。** `userQuestions` 槽位只容一个 provider，第二次注册会**抛异常**——而浏览器 UI 的后端自己那句注册没有 try/catch，所以网关若抢先占住，会连带整个 GUI 一起崩。因此网关**只在第一个会话出现时**才去请求槽位（那时整棵插件树已经装完，所以竞争中输的永远是它自己），发现被占就安静退让。`GET /sessions/:id/questions` 的 `answeredBy` 会告诉你实际归谁。
 
-授权请求是**运行时在工具调用中途发起**的，不是模型自己选的——没什么可以重措辞，也无处推迟。它无法降级为对话，所以网关改为转发它的审计链：
+想把槽位腾出来：在 profile 里禁掉 `@deepseek-ai/dsh-host-apiproxy` 那一行。它是**浏览器 UI 的后端**，不是 HTTP 载体（`@deepseek-ai/dsh-host-webserver`），所以网关照常对外服务；代价只是这个 profile 本地的浏览器 UI 用不了。
+
+### 授权：`approvals: gateway`
+
+授权不需要槽位：`approval/request` 是 waterfall，应答者可以**共存**——所以在一个同时跑着 GUI 的 profile 里也能开。
+
+```jsonc
+{ "kind": "approval_pending", "decisionId": "apigw-ap-…", "toolName": "write_file", "callId": "…", "reason": "…" }
+```
+
+```bash
+curl -X POST "$GW/sessions/$SID/approvals/$DID/decide" -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{"outcome":"allowed-once"}'
+```
+
+只接受 `allowed-once` 和 `rejected`，而 `allowed-once` 是这套词汇里**唯一的授权**，且只覆盖当下这一次调用。这里有意没有任何办法去改宽会话的 policy，也没办法「记住」一个决定。不由本网关驱动的会话，其授权请求直接传给部署自己的应答者。
+
+### 审计帧（总是开着）
+
+与上面两个开关无关，授权审计链一律转发，因为一个**停住的**回合绝不能看起来像一个很慢的回合：
 
 | 帧 | 含义 |
 | --- | --- |
-| `approval_asked` | `{ id, toolName, callId, reason }` —— 回合是**停住了**，不是在慢 |
+| `approval_asked` | `{ id, toolName, callId, reason }` —— 回合停住了，在等一个决定 |
 | `approval_decided` | `{ id, outcome }` —— `allowed-once` / `rejected` / `cancelled` / `unavailable` |
 | `approval_policy` | `{ policy, source }` —— 本会话的 `ask` 或 `never` |
 
-这堤上了最坏的那个缺口：在 API 上看，一个被授权卡住的回合和一个在思考的回合原本完全一模一样。但它不让 API 客户端*做决定*：没有应答者时适用部署的 fail-closed 默认值，结果是 `unavailable`。在可应答（v0.2.0）之前，纯 API 部署只有两个诚实的选择：盯着 GUI 去答，或者跑在 `policy: never` 下接受确定性拒绝。
+`approvals: host` 且没人盯着部署自己的 UI 时，适用 fail-closed 默认值，结果是 `unavailable`。无人值守想要确定性，用 `policy: never`：每个请求不问任何人直接拒绝。
 
 ## 安全模型
 
@@ -263,18 +292,21 @@ DeepSeek Harness 官方另有 **Python SDK**（[快速上手](https://deepseek-h
 | 会话 | `session_root` 下私有 JSONL，与部署/GUI 无关 | 部署共享会话库：GUI 可见、工作区分组、可接管 |
 | 能力面 | 默认组合极简（本地 bash 等，无 skills、无压缩；可 `cordis` 定制） | 部署默认 agent preset 全部能力（工具/技能/沙箱策略） |
 | 平台 | Linux x64/arm64、macOS 14+ arm64；**不支持 Windows** | 客户端任意语言/平台（含 Windows PowerShell） |
-| 隔离性 | `danger-full-access`，仅建议容器/可丢弃环境 | 继承部署沙箱与审批策略（询问以审计帧转发；可应答在 v0.2.0） |
+| 隔离性 | `danger-full-access`，仅建议容器/可丢弃环境 | 继承部署沙箱与审批策略；提问与授权可转发给客户端，用 HTTP 应答 |
 | 典型场景 | Python 脚本跑**一次性隔离任务**，无长期部署 | 第三方连接**你正在运行的部署**：跨语言、统一鉴权限流审计、续聊 UI 会话 |
 
 一次性 Python 任务 → 官方 SDK；持续部署、跨语言、续聊 UI 会话 → 本网关。**别混用**：DeepSeek 的 `sk-…` 密钥打不开本网关；`pip install deepseek-harness-sdk` 也连不上本网关。
 
 ## 扩展性（面向其他插件）
 
-网关在 Cordis 事件总线上发布三个事件，其他宿主插件用 `ctx.on(...)` 订阅（监听器随 fiber 回收，异常不影响网关）：
+网关在 Cordis 事件总线上发布以下事件，其他宿主插件用 `ctx.on(...)` 订阅（监听器随 fiber 回收，异常不影响网关）：
 
 - `gateway/session-created` → `{ sessionId, mode: 'created' | 'live' | 'resumed', workspace, cwd }`
+- `gateway/session-released` → `{ sessionId, mode, disposed }`
 - `gateway/message` → `{ sessionId, messageId, text, usage }`（每条助手回复提交时；`usage` 为该步 token 用量，无则 `null`）
 - `gateway/turn-end` → `{ sessionId, turn, reason, detail, usage, provider, model }`（`usage` 为整回合各步之和，全程无上报则 `null`）
+- `gateway/question-asked` → `{ sessionId, questionId, questions }`、`gateway/question-answered` → `{ sessionId, questionId, answers }`
+- `gateway/approval-pending` → `{ sessionId, decisionId, toolName, callId, reason }`、`gateway/approval-decided` → `{ sessionId, decisionId, outcome }`
 
 典型用途：审计落盘、外部告警、转发 IM/Webhook、自定义限流旁路。
 
@@ -295,9 +327,9 @@ pnpm smoke        # 对运行中的网关跑端到端冒烟
 | 版本 | 主题 | 内容 |
 | --- | --- | --- |
 | **v0.1.0** | 基线（当前） | REST+SSE、设置卡片、reasoning/text 分离、工作区归属、会话接管、跨平台文档 |
-| **v0.2.0** | 多租户安全 ★ | 多密钥 CRUD/吊销、按密钥限流（429 + `Retry-After`）、**工作区模型：每密钥独立 + 共享协作（`shared`/`isolated`）**、按密钥审批策略**与通过 API 应答授权**（`approval_request` 帧 + 决定端点）、审计（每密钥请求/会话/token 用量）、会话持久化（重启恢复） |
+| **v0.2.0** | 多租户安全 ★ | 多密钥 CRUD/吊销、按密钥限流（429 + `Retry-After`）、**工作区模型：每密钥独立 + 共享协作（`shared`/`isolated`）**、按密钥审批策略、审计（每密钥请求/会话/token 用量）、会话持久化（重启恢复） |
 | **v0.3.0** | 管理界面 | 完整 admin 设置页（密钥/限额/工作区绑定、会话监控、用量审计、软开关）+ typert `@Remote` 配置面 + per-key preset 选择 |
-| **v0.4.0** | 双工流式 | `webServer.registerUpgrade` WebSocket 全双工；SSE 保留为轻量选项；**可选开启的互动问答卡片中继**（含 `plan-review`——它的裁决是机器可读的，是文本唯一无法替代的那个场景），面向富交互客户端——有状态双向流程属于双工，不属于 SSE |
+| **v0.4.0** | 双工流式 | `webServer.registerUpgrade` WebSocket 全双工；SSE 保留为轻量选项。互动问答与授权已在 SSE + POST 上跑通，双工给的是更低的往返延迟和服务端发起的取消 |
 | **v0.5.0** | 生态与运维 | Python/Node HTTP 薄客户端（OpenAPI 生成——**不是**官方嵌入式 SDK，见上文）、部署指南（反代+TLS、Docker Compose）、指标/遥测导出、OpenAPI 生成进 CI |
 
 **不做/缓做**：多进程横向扩展、内置 TLS 终止（反代职责）、OAuth/OIDC（按密钥模型稳定后再议）。

@@ -16,7 +16,7 @@
  */
 export type Locale = 'en' | 'zh';
 /** Config keys the card renders a row for. */
-export type FieldKey = 'enabled' | 'prefix' | 'maxSessions' | 'workspaceMode' | 'defaultWorkspacePath' | 'allowDiscover' | 'allowAdopt' | 'exposeErrors' | 'questionMode' | 'corsOrigin' | 'sseHeartbeatMs' | 'bodyTimeoutMs' | 'adminKey';
+export type FieldKey = 'enabled' | 'prefix' | 'maxSessions' | 'workspaceMode' | 'defaultWorkspacePath' | 'allowDiscover' | 'allowAdopt' | 'exposeErrors' | 'questions' | 'approvals' | 'corsOrigin' | 'sseHeartbeatMs' | 'bodyTimeoutMs' | 'adminKey';
 export interface FieldText {
     label: string;
     hint: string;

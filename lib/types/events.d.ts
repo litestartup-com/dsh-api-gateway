@@ -36,4 +36,16 @@ export declare const chunkJson: (chunk: unknown) => Record<string, unknown> | nu
 export declare const eventPayload: (event: unknown) => GatewayEvent | null;
 /** Map a whole persisted event array, dropping events with no wire form. */
 export declare const mapEvents: (events: readonly unknown[]) => GatewayEvent[];
-export declare const sseFrame: (payload: GatewayEvent) => string;
+/**
+ * One SSE frame.
+ *
+ * Takes anything with a `kind`, not only a mapped `GatewayEvent`: the gateway
+ * also sends frames of its own (an interactive question, a pending approval)
+ * which have no position in the durable log and therefore NO `seq`. That absence
+ * is load-bearing -- a client that dedupes replayed history by seq, as it should,
+ * would drop a live frame that claimed a seq of 0.
+ */
+export declare const sseFrame: (payload: {
+    kind: string;
+    [key: string]: unknown;
+}) => string;

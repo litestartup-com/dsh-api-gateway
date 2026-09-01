@@ -31,12 +31,26 @@
     allowAdopt: true            # 可选：允许 POST /sessions/:id/adopt（接管任意会话）
     corsOrigin: '*'             # 可选：CORS 源（'*' 或具体域/数组，数组按请求 Origin 匹配回显；公开部署建议收敛）
     exposeErrors: true          # 可选：错误响应是否带内部细节（公开部署建议 false）
-    # 可选：agent 发起互动提问时怎么办。
-    #   conversation（默认）—— 把问题交回模型，要它写进回复并结束回合，你像回消息一样答；
-    #                          回合不会挂住，耗时与成本仍然可信，cron/CI 这类无人值守也安全。
-    #   host           —— 交给部署自己的 provider（即 Web GUI）。只有确实有人盯着那个
-    #                     浏览器时才对：没有应答者的话，回合会一直挂到被取消。
-    # 授权（工具权限）不受这个开关影响：它由运行时在工具调用中途发起，无法改成对话。
-    questionMode: conversation
+    # 可选：谁回答 agent 的互动提问（ask_user_question）。
+    #   host（默认）—— 不插手，交给部署自己的 provider。在带 Web UI 的 profile 里，
+    #                  卡片就弹在那个浏览器上，外网的 API 客户端点不到。
+    #   gateway     —— 提问以 question_asked 帧转给 API 客户端，用
+    #                  POST /sessions/:id/questions/:questionId/answer 回答。
+    #                  agent、工具、模型都不受影响：ask() 照旧阻塞、照旧拿人的回答，
+    #                  只是那个人换成了远端客户端。
+    #
+    # ⚠ gateway 是「请求槽位」，不是「抢」：userQuestions 只容一个 provider，
+    #   被占了网关就安静退让（GET /sessions/:id/questions 的 answeredBy 会说实话）。
+    #   想把槽位腾出来，禁掉 @deepseek-ai/dsh-host-apiproxy 那一行——它是浏览器 UI
+    #   的后端，不是 HTTP 载体（dsh-host-webserver），所以网关照常对外服务。
+    questions: host
+    # 可选：谁批授权请求（工具权限）。
+    #   host（默认）—— 交给部署自己的应答者。
+    #   gateway     —— 以 approval_pending 帧转给 API 客户端，用
+    #                  POST /sessions/:id/approvals/:decisionId/decide 决定。
+    # 授权不需要槽位（approval/request 是 waterfall，应答者共存），所以在带 GUI 的
+    # profile 里也能开；且只接管本网关驱动的会话，唯一能给的授权是一次性的
+    # allowed-once，改不宽会话 policy。
+    approvals: host
 
 # 卸载 = 删除上面这一行（可选 pnpm remove dsh-api-gateway），重启。
