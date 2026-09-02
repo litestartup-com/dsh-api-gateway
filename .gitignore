@@ -4,3 +4,8 @@ node_modules/
 # local development context (not published, not tracked)
 CONTEXT.md
 RULE.md
+
+# internal planning docs (superseded by APIPROXY.md in dsh-agent-manager; kept
+# locally for cross-repo references, not published)
+REFACTOR.md
+REFACTOR-PLAN.md
