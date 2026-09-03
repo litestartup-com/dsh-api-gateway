@@ -45,7 +45,13 @@ dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 | POST | `{prefix}/admin/rotate-key` | X-Admin-Key |
 | POST | `{prefix}/proxy/<method>` | X-API-Key / Bearer |
 | POST | `{prefix}/proxy/respond` | X-API-Key / Bearer |
+| POST | `{prefix}/sessions/{id}/sandbox-mode` | X-API-Key / Bearer |
 | GET | `{prefix}/events.mux`（WebSocket 升级） | X-API-Key |
+
+`sessions/{id}/sandbox-mode`：请求体 `{ "mode": "read-only" | "workspace-write" }`，给**活会话**写一个
+`sandbox/mode` 覆盖事件（`dsh-sandbox-policy/session-mode`，持久、冷醒 replay 恢复）。冷/失联会话 → 409
+`session_not_live`；`danger-full-access` 不可经 wire 授予（宿主 UI 专属）。这是 wire 上唯一能按会话设置
+沙箱模式的通道（`session.create` 无沙箱字段），供 manager 在创建会话后、首次 prompt 前调用一次。
 
 同一 mux 升级路径也注册在 `{prefix}/proxy/events.mux`，使客户端「base + method」的统一约定
 （manager 的 rpc base 即 `/api-gw/v1/proxy`）无需为 mux 特判。

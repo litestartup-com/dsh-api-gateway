@@ -86,6 +86,43 @@ paths:
         '401': { description: unauthorized }
         '403': { description: method_not_allowed (whitelist) }
         '502': { description: upstream_unreachable }
+  /sessions/{id}/sandbox-mode:
+    post:
+      summary: >
+        Per-session sandbox override (read-only | workspace-write). Pins a
+        sandbox/mode override event onto a live session; durable across cold
+        wake (log replay). danger-full-access is not grantable over the wire.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: Session id (must be live/attached)
+      security:
+        - ApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: { type: string, enum: [read-only, workspace-write] }
+      responses:
+        '200':
+          description: override written
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId: { type: string }
+                  mode: { type: string }
+        '400': { description: bad_json / invalid_mode }
+        '401': { description: unauthorized }
+        '409': { description: session_not_live (cold or unknown session) }
+        '501': { description: service_unavailable (host session store missing) }
   /events.mux:
     get:
       summary: >
