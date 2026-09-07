@@ -5,7 +5,9 @@ node_modules/
 CONTEXT.md
 RULE.md
 
-# internal planning docs (superseded by APIPROXY.md in dsh-agent-manager; kept
-# locally for cross-repo references, not published)
+# internal design/planning docs — moved to the private design library; these
+# rules stay so such files can never land in this public repo again
 REFACTOR.md
 REFACTOR-PLAN.md
+DESIGN.md
+PLAN*.md

@@ -101,6 +101,12 @@ respond,  host.describe
 
 删除组合里的插件行（可选 `dsh plugin remove dsh-api-gateway`），重启。
 
+## 文档范围
+
+本仓库只保留使用者需要的内容：README、`openapi.yaml`、示例与测试。
+**内部设计与重构计划不在本仓库**（集中在不公开发布的内部设计库）——代码、接口契约与
+示例即完整的可运行、可自托管交付物。
+
 ## License
 
 MIT
