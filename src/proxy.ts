@@ -1,8 +1,8 @@
 /**
  * dsh-api-gateway — proxy plumbing (pure).
  *
- * Whitelist and URL builders for the loopback proxy, with no Node/Cordis
- * surface so they stay directly unit-testable (see test/proxy.test.mjs).
+ * 白名单与守卫，不带 Node/Cordis 面，保持直接可单测（见 test/proxy.test.mjs）。
+ * 0.1.2 起网关不再回环转发：白名单是「进程内 facade 可服务的方法集合」。
  */
 
 /**
@@ -27,10 +27,6 @@ export const DEFAULT_PROXY_WHITELIST: readonly string[] = [
   'host.describe',
 ]
 
-/** Whether a proxied method may be forwarded. */
+/** Whether a method may be served by the facade. */
 export const isProxyMethodAllowed = (method: string, whitelist: readonly string[]): boolean =>
   whitelist.includes(method)
-
-/** WebSocket URL of the mux downlink: ws(s)://<proxyTarget>/events.mux. */
-export const muxProxyUrl = (proxyTarget: string): string =>
-  `${proxyTarget.replace(/\/+$/, '').replace(/^http/, 'ws')}/events.mux`

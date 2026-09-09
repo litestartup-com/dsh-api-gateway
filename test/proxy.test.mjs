@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { createServer } from 'node:http'
 import { EventEmitter } from 'node:events'
-import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed, muxProxyUrl } from '../lib/proxy.js'
+import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed } from '../lib/proxy.js'
 import { argsFor, isMigrated, invokeRemote, readHistory, REMOTE_METHODS } from '../lib/adapter.js'
 import plugin from '../lib/index.js'
 

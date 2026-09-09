@@ -1,9 +1,10 @@
 /**
- * dsh-api-gateway — Host half (S3: authenticated loopback proxy).
+ * dsh-api-gateway — Host half (0.1.2 起：in-process facade，不再是回环代理).
  *
- * The plugin no longer drives agents. It is a thin, fail-closed reverse proxy
- * that lets an external client (the manager) reach the harness's own /api
- * surface (dsh-client-connection + dsh-host-apiproxy) from another machine:
+ * The plugin no longer drives agents. It is a thin, fail-closed gateway that
+ * lets an external client (the manager) reach the harness session surface from
+ * another machine. 0.1.2 起内部为进程内直调（typertGateway / session follow /
+ * session control / waterfall），不再回环转发 HTTP；对外契约冻结：
  *
  *   POST {prefix}/proxy/<method>  ->  in-process Remote call          (unary, migrated set)
  *   POST {prefix}/proxy/respond   ->  pending-table answer            (answers)
@@ -11,8 +12,8 @@
  *   GET  {prefix}/events.mux      ->  WS broadcast (downlink only)
  *
  * Every proxied path requires an API key, and every method must be on the
- * whitelist — anything else is refused before touching the upstream. The
- * proxy never parses the RPC envelope: it forwards bytes, so the wire
+ * whitelist — anything else is refused before touching the host. The proxy
+ * never parses the RPC envelope: it forwards bytes, so the wire
  * contract belongs to DSH and the manager, not to this plugin.
  *
  * Install: pnpm add dsh-api-gateway, then add one row to the host composition
@@ -73,7 +74,10 @@ export interface Config {
   corsOrigin: string | string[]
   /** Include internal error messages in HTTP responses (helpful locally, noisy publicly). */
   exposeErrors: boolean
-  /** Upstream /api base to forward to. Defaults to the loopback DSH /api. */
+  /**
+   * @deprecated 0.1.2 起不再回环转发；字段保留仅为兼容既有配置（Phase 5 留一版）。
+   * 值不再参与任何请求路径。
+   */
   proxyTarget: string
   /** Optional override for the proxy whitelist; defaults to DEFAULT_PROXY_WHITELIST. */
   proxyWhitelist: string[]
@@ -720,7 +724,7 @@ export default {
       }
     })
 
-    ctx.logger?.info?.('[dsh-api-gw] mounted at ' + cfg.prefix + ' proxying ' + cfg.proxyTarget + ' (enabled=' + String(cfg.enabled) + ')')
+    ctx.logger?.info?.('[dsh-api-gw] mounted at ' + cfg.prefix + ' (facade, enabled=' + String(cfg.enabled) + ')')
   },
 }
 
