@@ -8,6 +8,11 @@
  */
 export interface GatewayInvoker {
     invoke(request: InvokeRemoteRequest): Promise<unknown>;
+    stream?(request: InvokeRemoteRequest): Promise<AsyncIterable<unknown>>;
+}
+/** 提供 stream 面的宿主分发器（typertGateway 的 stream 子集）。 */
+export interface GatewayStreamer {
+    stream(request: InvokeRemoteRequest): Promise<AsyncIterable<unknown>>;
 }
 /** 进程内 Remote 请求（字段名必须与 descriptor 精确一致）。 */
 export interface InvokeRemoteRequest {
@@ -31,3 +36,20 @@ export declare const isMigrated: (method: string) => boolean;
 export declare const argsFor: (method: string, payload: unknown) => Record<string, unknown>;
 /** 一次直调：返回业务 value；抛错时由调用方翻译成 server-response 错误信封。 */
 export declare const invokeRemote: (invoker: GatewayInvoker, method: string, payload: unknown, signal?: AbortSignal) => Promise<unknown>;
+/**
+ * `session.history` 的 0.1.2 翻译：0.1.2 无同名 Remote，历史经
+ * `session/follow` 流（先出 snapshot 帧再出增量）。网关只取首帧快照，
+ * 记录翻译回老契约形状：
+ * - `{type:'event', event:{type,seq,time,data}}` → 拆包为 `{ event: { type, ...data } }`
+ *   （老契约事件 = type + 平铺载荷；seq/time 是 0.1.2 信封字段，丢弃）
+ * - `{type:'chunks', ...}` 打包的流式增量 → **丢弃**（message 帧已带全文，
+ *   与 manager compactHistory 的既有语义一致）
+ * - projections 原样透传（values.title 对齐）
+ */
+export declare const readHistory: (streamer: {
+    stream(request: InvokeRemoteRequest): Promise<AsyncIterable<unknown>>;
+}, sessionId: string) => Promise<{
+    events: unknown[];
+    hasMore: boolean;
+    projections: unknown;
+}>;

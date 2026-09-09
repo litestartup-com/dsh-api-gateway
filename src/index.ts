@@ -34,7 +34,7 @@ import z from '@deepseek-ai/schemastery'
 import { WebSocket, WebSocketServer } from 'ws'
 import { provisionDecision, resolveCorsOrigin, routeSegments } from './http.js'
 import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed, muxProxyUrl } from './proxy.js'
-import { invokeRemote, isMigrated, type GatewayInvoker } from './adapter.js'
+import { invokeRemote, isMigrated, readHistory, type GatewayInvoker, type GatewayStreamer } from './adapter.js'
 import { isRemoteSandboxMode, REMOTE_SANDBOX_MODES } from './sandbox-mode.js'
 // 加载 ctx.typertGateway 的 Context 模块增补（0.1.2 内置 Remote 分发器）。
 import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway/types'
@@ -262,6 +262,30 @@ export default {
         return sendJson(res, 400, { error: 'method_mismatch', hint: 'envelope method must match the path method' })
       }
       const rpcId = typeof envelope.rpcId === 'string' ? envelope.rpcId : ''
+      if (method === 'session.history') {
+        // 0.1.2 无同名 Remote：follow 流首帧快照翻译（见 adapter.readHistory）。
+        const payload = (envelope.payload ?? {}) as { sessionId?: unknown }
+        if (typeof payload.sessionId !== 'string') {
+          return sendJson(res, 400, { error: 'bad_request', hint: 'session.history requires payload.sessionId' })
+        }
+        const gateway = ctx.get('typertGateway', true) as TypertGateway | undefined
+        if (gateway === undefined || gateway.stream === undefined) {
+          return sendJson(res, 501, { error: 'service_unavailable', hint: 'host typertGateway stream is not available' })
+        }
+        try {
+          const value = await readHistory(gateway as GatewayStreamer, payload.sessionId)
+          return sendJson(res, 200, { type: 'server-response', rpcId, result: { ok: true, value } })
+        } catch (error) {
+          const code = (error as { code?: unknown })?.code
+          const message = String((error as Error)?.message ?? error)
+          ctx.logger?.warn?.('[dsh-api-gw] in-process session.history failed: ' + message)
+          return sendJson(res, 200, {
+            type: 'server-response',
+            rpcId,
+            result: { ok: false, error: { code: typeof code === 'string' ? code : 'gateway/internal', message } },
+          })
+        }
+      }
       if (!isMigrated(method)) {
         return sendJson(res, 501, { error: 'method_not_migrated', hint: 'this method is not yet served in-process on the 0.1.2 host' })
       }

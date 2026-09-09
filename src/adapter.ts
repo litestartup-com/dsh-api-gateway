@@ -11,6 +11,12 @@ import { randomBytes } from 'node:crypto'
 
 export interface GatewayInvoker {
   invoke(request: InvokeRemoteRequest): Promise<unknown>
+  stream?(request: InvokeRemoteRequest): Promise<AsyncIterable<unknown>>
+}
+
+/** 提供 stream 面的宿主分发器（typertGateway 的 stream 子集）。 */
+export interface GatewayStreamer {
+  stream(request: InvokeRemoteRequest): Promise<AsyncIterable<unknown>>
 }
 
 /** 进程内 Remote 请求（字段名必须与 descriptor 精确一致）。 */
@@ -94,4 +100,41 @@ export const invokeRemote = async (
     throw new Error(`gateway: method ${JSON.stringify(method)} is not migrated to the in-process adapter`)
   }
   return invoker.invoke({ namespace: target.namespace, method: target.method, args: argsFor(method, payload), signal })
+}
+
+/**
+ * `session.history` 的 0.1.2 翻译：0.1.2 无同名 Remote，历史经
+ * `session/follow` 流（先出 snapshot 帧再出增量）。网关只取首帧快照，
+ * 记录翻译回老契约形状：
+ * - `{type:'event', event:{type,seq,time,data}}` → 拆包为 `{ event: { type, ...data } }`
+ *   （老契约事件 = type + 平铺载荷；seq/time 是 0.1.2 信封字段，丢弃）
+ * - `{type:'chunks', ...}` 打包的流式增量 → **丢弃**（message 帧已带全文，
+ *   与 manager compactHistory 的既有语义一致）
+ * - projections 原样透传（values.title 对齐）
+ */
+export const readHistory = async (
+  streamer: { stream(request: InvokeRemoteRequest): Promise<AsyncIterable<unknown>> },
+  sessionId: string,
+): Promise<{ events: unknown[]; hasMore: boolean; projections: unknown }> => {
+  const stream = await streamer.stream({
+    namespace: 'session',
+    method: 'follow',
+    args: { request: { address: { kind: 'session', sessionId } } },
+  })
+  const first = await stream[Symbol.asyncIterator]().next()
+  if (first.done) throw new Error('session/follow stream closed without a snapshot frame')
+  const snapshot = first.value as {
+    type?: unknown
+    records?: unknown
+    hasMore?: unknown
+    projections?: unknown
+  }
+  if (snapshot.type !== 'snapshot') throw new Error(`session/follow first frame is ${String(snapshot.type)}, expected snapshot`)
+  const events: unknown[] = []
+  for (const record of (snapshot.records ?? []) as Array<{ type?: unknown; event?: { type?: unknown; data?: unknown } }>) {
+    if (record.type !== 'event' || record.event === undefined) continue // chunks 打包记录丢弃
+    const data = (record.event.data ?? {}) as Record<string, unknown>
+    events.push({ event: { type: record.event.type, ...data } })
+  }
+  return { events, hasMore: snapshot.hasMore === true, projections: snapshot.projections ?? null }
 }

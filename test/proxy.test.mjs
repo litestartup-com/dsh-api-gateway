@@ -4,7 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { createServer } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed, muxProxyUrl } from '../lib/proxy.js'
-import { argsFor, isMigrated, invokeRemote, REMOTE_METHODS } from '../lib/adapter.js'
+import { argsFor, isMigrated, invokeRemote, readHistory, REMOTE_METHODS } from '../lib/adapter.js'
 import plugin from '../lib/index.js'
 
 // ---- pure helpers ----
@@ -84,6 +84,46 @@ test('adapter: session.cancel passes the sessionId through', async () => {
   const value = await invokeRemote(invoker, 'session.cancel', { sessionId: 's1' })
   assert.deepEqual(value, { accepted: true })
   assert.deepEqual(calls[0], { namespace: 'session', method: 'cancel', args: { request: { sessionId: 's1' } }, signal: undefined })
+})
+
+test('adapter: session.history reads the follow snapshot and translates records', async () => {
+  const streamCalls = []
+  const snapshot = {
+    type: 'snapshot',
+    header: { version: 1, id: 's1', createdAt: 1, cwd: 'C:/ws' },
+    cursor: 5,
+    records: [
+      { type: 'event', event: { type: 'user/message', seq: 1, time: 11, data: { message: { role: 'user', text: 'hi' } } } },
+      { type: 'chunks', event: { type: 'chunkrow/text', seq: 2, time: 12, data: { text: 'H' } } },
+      { type: 'event', event: { type: 'assistant/message', seq: 3, time: 13, data: { message: { role: 'assistant', text: 'Hi' } } } },
+    ],
+    hasMore: false,
+    projections: { asOfSeq: 3, values: { title: 't1' } },
+  }
+  const streamer = {
+    stream: async (request) => {
+      streamCalls.push(request)
+      return (async function* () { yield snapshot })()
+    },
+  }
+  const value = await readHistory(streamer, 's1')
+  assert.deepEqual(value, {
+    events: [
+      { event: { type: 'user/message', message: { role: 'user', text: 'hi' } } },
+      { event: { type: 'assistant/message', message: { role: 'assistant', text: 'Hi' } } },
+    ],
+    hasMore: false,
+    projections: snapshot.projections,
+  }, 'chunks records must be dropped; seq/time envelope fields stripped; data payload flattened')
+  assert.deepEqual(streamCalls[0], {
+    namespace: 'session', method: 'follow',
+    args: { request: { address: { kind: 'session', sessionId: 's1' } } },
+  })
+})
+
+test('adapter: session.history fails loud when the follow stream has no snapshot', async () => {
+  const streamer = { stream: async () => (async function* () {})() }
+  await assert.rejects(() => readHistory(streamer, 's1'), /closed without a snapshot/)
 })
 
 // ---- integration: the plugin over a mock upstream ----
