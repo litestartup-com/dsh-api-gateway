@@ -25,7 +25,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+// 0.1.2（A2-10）：settingsNamespace 运行时导出已删，但 dsh-settings 的模块增补
+// 声明（ctx.settings: SettingsProvider）仍在本包——保留 type import 以加载它。
+import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createRequire } from 'node:module'
 import z from '@deepseek-ai/schemastery'
@@ -552,7 +554,10 @@ export default {
     // keyed 'api-gateway' would be indistinguishable from it in the plugin list.
     ctx.inject(['settings'], (sctx) => {
       try {
-        const scope = sctx.settings.register(settingsNamespace('dsh-api-gw'), Config, { base: config, applies: 'live' })
+        // 0.1.2（A2-10）：settingsNamespace 运行时导出已删——命名空间是编译期
+        // 校验的字符串字面量（小写连字符标识符），register 签名不变。
+        const provider: SettingsProvider = sctx.settings
+        const scope = provider.register('dsh-api-gw', Config, { base: config, applies: 'live' })
         settingsScope = scope
         const resolved = scope.get()
         const prefixChanged = resolved.prefix !== cfg.prefix
