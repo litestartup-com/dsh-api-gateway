@@ -93,12 +93,13 @@ test('adapter: session.history reads the follow snapshot and translates records'
     header: { version: 1, id: 's1', createdAt: 1, cwd: 'C:/ws' },
     cursor: 5,
     records: [
-      { type: 'event', event: { type: 'user/message', seq: 1, time: 11, data: { message: { role: 'user', text: 'hi' } } } },
+      { type: 'event', event: { type: 'user/message', seq: 1, time: 11, data: { id: 'm1', content: [{ type: 'text', text: 'hi' }] } } },
       { type: 'chunks', event: { type: 'chunkrow/text', seq: 2, time: 12, data: { text: 'H' } } },
-      { type: 'event', event: { type: 'assistant/message', seq: 3, time: 13, data: { message: { role: 'assistant', text: 'Hi' } } } },
+      { type: 'event', event: { type: 'agent/inbox/spliced', seq: 3, time: 13, data: { target: 'next-turn', start: 0, inserted: [{ id: 'm2', role: 'user', content: [{ type: 'text', text: 'hello' }], source: { kind: 'user', rpcId: 'apigw-x' } }] } } },
+      { type: 'event', event: { type: 'turn/end', seq: 4, time: 14, data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } } },
     ],
     hasMore: false,
-    projections: { asOfSeq: 3, values: { title: 't1' } },
+    projections: { asOfSeq: 4, values: { title: 't1' } },
   }
   const streamer = {
     stream: async (request) => {
@@ -109,12 +110,13 @@ test('adapter: session.history reads the follow snapshot and translates records'
   const value = await readHistory(streamer, 's1')
   assert.deepEqual(value, {
     events: [
-      { event: { type: 'user/message', message: { role: 'user', text: 'hi' } } },
-      { event: { type: 'assistant/message', message: { role: 'assistant', text: 'Hi' } } },
+      { event: snapshot.records[0].event },
+      { event: { type: 'user/message', data: { id: 'm2', content: [{ type: 'text', text: 'hello' }] } } },
+      { event: snapshot.records[3].event },
     ],
     hasMore: false,
     projections: snapshot.projections,
-  }, 'chunks records must be dropped; seq/time envelope fields stripped; data payload flattened')
+  }, 'wire events pass through untouched; chunks dropped; spliced user messages translated to user/message')
   assert.deepEqual(streamCalls[0], {
     namespace: 'session', method: 'follow',
     args: { request: { address: { kind: 'session', sessionId: 's1' } } },

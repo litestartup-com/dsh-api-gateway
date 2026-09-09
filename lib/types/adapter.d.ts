@@ -40,10 +40,12 @@ export declare const invokeRemote: (invoker: GatewayInvoker, method: string, pay
  * `session.history` 的 0.1.2 翻译：0.1.2 无同名 Remote，历史经
  * `session/follow` 流（先出 snapshot 帧再出增量）。网关只取首帧快照，
  * 记录翻译回老契约形状：
- * - `{type:'event', event:{type,seq,time,data}}` → 拆包为 `{ event: { type, ...data } }`
- *   （老契约事件 = type + 平铺载荷；seq/time 是 0.1.2 信封字段，丢弃）
+ * - SessionWireEvent（{type,seq,time,data,ignorable?}）**原样透传**——
+ *   manager 的 eventPayload 已按 data/seq 信封解析（不得平铺）
  * - `{type:'chunks', ...}` 打包的流式增量 → **丢弃**（message 帧已带全文，
  *   与 manager compactHistory 的既有语义一致）
+ * - 词汇映射：`agent/inbox/spliced` → 老词汇 `user/message`（仅 user 角色的
+ *   inserted 消息；0.1.2 把用户消息放进 inbox 事件，manager 不认 spliced）
  * - projections 原样透传（values.title 对齐）
  */
 export declare const readHistory: (streamer: {
