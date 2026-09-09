@@ -35,8 +35,18 @@ export const REMOTE_METHODS: Readonly<Record<string, { readonly namespace: strin
   'session.cancel': { namespace: 'session', method: 'cancel' },
 }
 
-/** 已迁移进 REMOTE_METHODS 的方法才能直调。 */
-export const isMigrated = (method: string): boolean => REMOTE_METHODS[method] !== undefined
+/**
+ * 0.1.2 无 host.describe Remote；老契约里它的 version 恒为协议号 '0.0.1'
+ * （DSH-FACTS §6 双机实测：与 DSH 包版本无关，manager 只作信息展示）。
+ * 网关原样合成该常量，manager 的探活/状态页零感知。
+ */
+export const HOST_DESCRIBE: Readonly<{ version: string }> = Object.freeze({ version: '0.0.1' })
+
+/** 无 0.1.2 Remote 对应、由网关合成的白名单方法。 */
+const SYNTHETIC_METHODS: ReadonlySet<string> = new Set(['host.describe'])
+
+/** 已迁移（含合成）的方法才能直调。 */
+export const isMigrated = (method: string): boolean => REMOTE_METHODS[method] !== undefined || SYNTHETIC_METHODS.has(method)
 
 /**
  * manager 的旧 payload → 0.1.2 的命名 args（wire 字段名由 descriptor 决定）。
@@ -95,6 +105,11 @@ export const invokeRemote = async (
   payload: unknown,
   signal?: AbortSignal,
 ): Promise<unknown> => {
+  if (SYNTHETIC_METHODS.has(method)) {
+    // 合成面不触碰 invoker：值由网关按冻结契约直接给出。
+    if (method === 'host.describe') return HOST_DESCRIBE
+    throw new Error(`gateway: synthetic method ${JSON.stringify(method)} has no producer`)
+  }
   const target = REMOTE_METHODS[method]
   if (target === undefined) {
     throw new Error(`gateway: method ${JSON.stringify(method)} is not migrated to the in-process adapter`)

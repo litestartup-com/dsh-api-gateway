@@ -26,7 +26,15 @@ export declare const REMOTE_METHODS: Readonly<Record<string, {
     readonly namespace: string;
     readonly method: string;
 }>>;
-/** 已迁移进 REMOTE_METHODS 的方法才能直调。 */
+/**
+ * 0.1.2 无 host.describe Remote；老契约里它的 version 恒为协议号 '0.0.1'
+ * （DSH-FACTS §6 双机实测：与 DSH 包版本无关，manager 只作信息展示）。
+ * 网关原样合成该常量，manager 的探活/状态页零感知。
+ */
+export declare const HOST_DESCRIBE: Readonly<{
+    version: string;
+}>;
+/** 已迁移（含合成）的方法才能直调。 */
 export declare const isMigrated: (method: string) => boolean;
 /**
  * manager 的旧 payload → 0.1.2 的命名 args（wire 字段名由 descriptor 决定）。

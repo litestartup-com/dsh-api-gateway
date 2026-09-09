@@ -46,6 +46,15 @@ test('adapter: session.list maps to session/list with descriptor-named args', as
   assert.deepEqual(calls[0], { namespace: 'session', method: 'list', args: { _request: { cursor: 'c1' } }, signal: undefined })
 })
 
+test('adapter: host.describe is synthesized (0.1.2 has no such Remote)', async () => {
+  assert.equal(isMigrated('host.describe'), true, 'synthesized methods count as migrated')
+  let called = false
+  const invoker = { invoke: async () => { called = true; return {} } }
+  const value = await invokeRemote(invoker, 'host.describe', {})
+  assert.deepEqual(value, { version: '0.0.1' }, 'the old contract constant (DSH-FACTS §6)')
+  assert.equal(called, false, 'synthesis must not touch the dispatcher')
+})
+
 test('adapter: session.create maps to session/create with request-named args', async () => {
   assert.deepEqual(REMOTE_METHODS['session.create'], { namespace: 'session', method: 'create' })
   assert.deepEqual(argsFor('session.create', { cwd: 'C:/ws', agentPreset: 'standard' }), {
