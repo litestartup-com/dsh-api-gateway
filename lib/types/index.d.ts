@@ -53,6 +53,13 @@ export interface Config {
      * 值不再参与任何请求路径。
      */
     proxyTarget: string;
+    /**
+     * 允许沙箱路由把会话钉在 danger-full-access（默认拒绝）。
+     *
+     * 风险告知（2026-09-09 拍板）：开启即授予远端客户端全量沙箱能力，
+     * 不做 docker-only 等环境限制；网关只在启动时与每次命中时写告警日志。
+     */
+    allowFullAccess: boolean;
     /** Optional override for the proxy whitelist; defaults to DEFAULT_PROXY_WHITELIST. */
     proxyWhitelist: string[];
 }
@@ -66,6 +73,7 @@ export declare const Config: z<Schemastery.ObjectS<{
     corsOrigin: z<string | string[], string | string[]>;
     exposeErrors: z<boolean, boolean>;
     proxyTarget: z<string, string>;
+    allowFullAccess: z<boolean, boolean>;
     proxyWhitelist: z<string[], string[]>;
 }>, Schemastery.ObjectT<{
     prefix: z<string, string>;
@@ -77,6 +85,7 @@ export declare const Config: z<Schemastery.ObjectS<{
     corsOrigin: z<string | string[], string | string[]>;
     exposeErrors: z<boolean, boolean>;
     proxyTarget: z<string, string>;
+    allowFullAccess: z<boolean, boolean>;
     proxyWhitelist: z<string[], string[]>;
 }>>;
 declare const _default: {
@@ -91,6 +100,7 @@ declare const _default: {
         corsOrigin: z<string | string[], string | string[]>;
         exposeErrors: z<boolean, boolean>;
         proxyTarget: z<string, string>;
+        allowFullAccess: z<boolean, boolean>;
         proxyWhitelist: z<string[], string[]>;
     }>, Schemastery.ObjectT<{
         prefix: z<string, string>;
@@ -102,6 +112,7 @@ declare const _default: {
         corsOrigin: z<string | string[], string | string[]>;
         exposeErrors: z<boolean, boolean>;
         proxyTarget: z<string, string>;
+        allowFullAccess: z<boolean, boolean>;
         proxyWhitelist: z<string[], string[]>;
     }>>;
     apply(ctx: Context, config: Config): void;

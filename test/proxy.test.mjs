@@ -175,7 +175,12 @@ const boot = async (config, upstream, { sessions = null } = {}) => {
   const root = new Context()
   const web = makeWebServer()
   root.provide('webServer', web)
-  root.provide('logger', { debug: () => {}, info: () => {}, warn: () => {} })
+  // 断言日志：给内置 LoggerService 挂捕获 exporter。cordis 默认 logger level
+  // 只到 info（warn/debug 被滤掉），所以插件在 intercept(level:3) 的子上下文上
+  // 启动——宿主里真实 logger 配置照常显示 warn，这里只是测试捕获。
+  const bootCtx = root.intercept('logger', { level: 3 })
+  const logs = []
+  bootCtx.logger.exporter({ export: (m) => logs.push({ type: m.type, text: m.args.map(String).join(' ') }) })
   // 0.1.2 in-process seam: the host's built-in Remote dispatcher (mocked).
   const invocations = []
   root.provide('typertGateway', {
@@ -190,9 +195,9 @@ const boot = async (config, upstream, { sessions = null } = {}) => {
   if (sessions !== null) root.provide('sessions', sessions)
   // Object form so cordis validates the Config schema and fills the defaults
   // (prefix, whitelist, ...) exactly as the real host composition does.
-  const fiber = root.plugin(plugin, { proxyTarget: upstream.url, ...config })
+  const fiber = bootCtx.plugin(plugin, { proxyTarget: upstream.url, ...config })
   await fiber
-  return { root, web, fiber, invocations }
+  return { root, web, fiber, invocations, logs }
 }
 
 const teardown = async (booted, upstream) => {
@@ -411,6 +416,50 @@ test('sandbox-mode route: a host without the session store degrades to 501', asy
     })
     assert.equal(res.statusCode, 501)
     assert.equal(JSON.parse(res.body).error, 'service_unavailable')
+  } finally {
+    await fiber.dispose()
+    await upstream.close()
+  }
+})
+
+test('sandbox-mode route: danger-full-access needs the allowFullAccess opt-in and warns on every hit', async () => {
+  const upstream = await startUpstream()
+  const appended = []
+  const fakeSession = { id: 's-live', append: (type, data) => appended.push({ type, data }) }
+  const { web, fiber, logs } = await boot({ apiKeys: ['k1'], allowFullAccess: true }, upstream, {
+    sessions: { get: (id) => (id === 's-live' ? fakeSession : undefined) },
+  })
+  try {
+    // 启动风险告知（拍板：不做环境限制，只告知）。
+    assert.ok(logs.some((l) => l.type === 'warn' && l.text.includes('allowFullAccess is ON')), 'boot warns about the opt-in')
+    const ok = await call(web, 'POST', '/api-gw/v1/sessions/s-live/sandbox-mode', {
+      headers: { 'x-api-key': 'k1' },
+      body: Buffer.from('{"mode":"danger-full-access"}'),
+    })
+    assert.equal(ok.statusCode, 200)
+    assert.deepEqual(JSON.parse(ok.body), { sessionId: 's-live', mode: 'danger-full-access' })
+    assert.deepEqual(appended, [{ type: 'sandbox/mode', data: { mode: 'danger-full-access' } }])
+    assert.ok(logs.some((l) => l.type === 'warn' && l.text.includes('pinned to danger-full-access')), 'each hit is warned')
+  } finally {
+    await fiber.dispose()
+    await upstream.close()
+  }
+})
+
+test('sandbox-mode route: danger-full-access stays refused without the opt-in', async () => {
+  const upstream = await startUpstream()
+  const fakeSession = { id: 's-live', append: () => {} }
+  const { web, fiber } = await boot({ apiKeys: ['k1'] }, upstream, {
+    sessions: { get: (id) => (id === 's-live' ? fakeSession : undefined) },
+  })
+  try {
+    const res = await call(web, 'POST', '/api-gw/v1/sessions/s-live/sandbox-mode', {
+      headers: { 'x-api-key': 'k1' },
+      body: Buffer.from('{"mode":"danger-full-access"}'),
+    })
+    assert.equal(res.statusCode, 400)
+    assert.equal(JSON.parse(res.body).error, 'invalid_mode')
+    assert.match(JSON.parse(res.body).hint, /allowFullAccess/)
   } finally {
     await fiber.dispose()
     await upstream.close()

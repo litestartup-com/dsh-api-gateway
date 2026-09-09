@@ -79,6 +79,13 @@ export interface Config {
    * 值不再参与任何请求路径。
    */
   proxyTarget: string
+  /**
+   * 允许沙箱路由把会话钉在 danger-full-access（默认拒绝）。
+   *
+   * 风险告知（2026-09-09 拍板）：开启即授予远端客户端全量沙箱能力，
+   * 不做 docker-only 等环境限制；网关只在启动时与每次命中时写告警日志。
+   */
+  allowFullAccess: boolean
   /** Optional override for the proxy whitelist; defaults to DEFAULT_PROXY_WHITELIST. */
   proxyWhitelist: string[]
 }
@@ -96,6 +103,7 @@ export const Config = z.object({
   corsOrigin: z.union([z.string(), z.array(z.string())]).default('*'),
   exposeErrors: z.boolean().default(true),
   proxyTarget: z.string().default('http://127.0.0.1:3080/api'),
+  allowFullAccess: z.boolean().default(false),
   proxyWhitelist: z.array(z.string()).default([...DEFAULT_PROXY_WHITELIST]),
 })
 
@@ -597,7 +605,9 @@ export default {
        * process-internal — so this small route is the only way a remote client
        * (the manager) can pin a fresh session's mode before the first prompt.
        *
-       * Capped at workspace-write: danger-full-access stays a host-UI decision.
+       * Capped at workspace-write by default: danger-full-access needs the
+       * operator's explicit `allowFullAccess` opt-in (风险告知，2026-09-09 拍板：
+       * 不限制 docker-only，只做告警).
        * Only live sessions can be pinned; the override is durable (log replay
        * restores it after a cold wake), so one call at creation time suffices.
        */
@@ -610,11 +620,16 @@ export default {
         } catch (error) {
           return sendJson(res, 400, { error: 'bad_json', detail: errorDetail(error) })
         }
-        if (!isRemoteSandboxMode(body.mode)) {
+        if (!isRemoteSandboxMode(body.mode, cfg.allowFullAccess)) {
           return sendJson(res, 400, {
             error: 'invalid_mode',
-            hint: 'mode must be one of: ' + REMOTE_SANDBOX_MODES.join(', '),
+            hint: 'mode must be one of: ' + REMOTE_SANDBOX_MODES.join(', ')
+              + (cfg.allowFullAccess ? ', danger-full-access' : ' (danger-full-access needs allowFullAccess)'),
           })
+        }
+        if (body.mode === 'danger-full-access') {
+          // 风险告知：每次命中都留一条醒目告警（拍板：不做环境限制，只告知）。
+          ctx.logger?.warn?.(`[dsh-api-gw] session ${sessionId} pinned to danger-full-access by a remote client (allowFullAccess is ON)`)
         }
         // Soft dependency: a host without the session store degrades cleanly
         // instead of breaking plugin startup (RULE 2).
@@ -725,6 +740,9 @@ export default {
     })
 
     ctx.logger?.info?.('[dsh-api-gw] mounted at ' + cfg.prefix + ' (facade, enabled=' + String(cfg.enabled) + ')')
+    if (cfg.allowFullAccess) {
+      ctx.logger?.warn?.('[dsh-api-gw] allowFullAccess is ON: remote clients may pin sessions to danger-full-access. This is an operator opt-in with no environment restriction — review before leaving it enabled.')
+    }
   },
 }
 

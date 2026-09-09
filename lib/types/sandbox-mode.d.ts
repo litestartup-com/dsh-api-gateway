@@ -6,13 +6,15 @@
  * session.create has no sandbox field. The gateway route that closes the gap
  * keeps its decision logic here so it stays directly unit-testable.
  */
-/** Modes a remote caller may pin on a session. */
+/** Modes a remote caller may pin on a session by default. */
 export declare const REMOTE_SANDBOX_MODES: readonly ["read-only", "workspace-write"];
 export type RemoteSandboxMode = (typeof REMOTE_SANDBOX_MODES)[number];
 /**
  * Validate an untrusted mode string from a request body.
  *
- * `danger-full-access` is deliberately absent: full access is a host-UI
- * decision and is not grantable over the wire.
+ * `danger-full-access` is refused unless `allowFullAccess` is true: the
+ * operator opts in via the `allowFullAccess` config field (风险告知：开启即
+ * 允许远端客户端把会话钉在全量沙箱——网关只在启动/命中时告警，不做
+ * docker-only 等环境限制，按 2026-09-09 拍板执行).
  */
-export declare const isRemoteSandboxMode: (value: unknown) => value is RemoteSandboxMode;
+export declare const isRemoteSandboxMode: (value: unknown, allowFullAccess?: boolean) => value is RemoteSandboxMode | "danger-full-access";
