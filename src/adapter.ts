@@ -22,6 +22,7 @@ export interface InvokeRemoteRequest {
 /** 白名单方法 → 0.1.2 Remote 坐标。Phase 2 起逐个补齐其余白名单方法。 */
 export const REMOTE_METHODS: Readonly<Record<string, { readonly namespace: string; readonly method: string }>> = {
   'session.list': { namespace: 'session', method: 'list' },
+  'session.create': { namespace: 'session', method: 'create' },
 }
 
 /** 已迁移进 REMOTE_METHODS 的方法才能直调。 */
@@ -37,6 +38,20 @@ export const argsFor = (method: string, payload: unknown): Record<string, unknow
     case 'session.list': {
       const p = (payload ?? {}) as { cursor?: unknown }
       return { _request: { ...(typeof p.cursor === 'string' ? { cursor: p.cursor } : {}) } }
+    }
+    case 'session.create': {
+      // Host 签名 create(request: SessionCreateRequest)：wire 字段名 = request
+      //（A1-01 实测：workspace/create 与 session/create 都用 {request:{...}}）。
+      // 可选字段一律剔除 null/undefined（strict codec 只认 string 或缺失）。
+      const p = (payload ?? {}) as { cwd?: unknown; sessionId?: unknown; agentPreset?: unknown; workspaceId?: unknown }
+      return {
+        request: {
+          ...(typeof p.cwd === 'string' ? { cwd: p.cwd } : {}),
+          ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}),
+          ...(typeof p.agentPreset === 'string' ? { agentPreset: p.agentPreset } : {}),
+          ...(typeof p.workspaceId === 'string' ? { workspaceId: p.workspaceId } : {}),
+        },
+      }
     }
     default:
       return {}

@@ -46,6 +46,23 @@ test('adapter: session.list maps to session/list with descriptor-named args', as
   assert.deepEqual(calls[0], { namespace: 'session', method: 'list', args: { _request: { cursor: 'c1' } }, signal: undefined })
 })
 
+test('adapter: session.create maps to session/create with request-named args', async () => {
+  assert.deepEqual(REMOTE_METHODS['session.create'], { namespace: 'session', method: 'create' })
+  assert.deepEqual(argsFor('session.create', { cwd: 'C:/ws', agentPreset: 'standard' }), {
+    request: { cwd: 'C:/ws', agentPreset: 'standard' },
+  })
+  assert.deepEqual(argsFor('session.create', { cwd: 'C:/ws', agentPreset: null, sessionId: undefined }), {
+    request: { cwd: 'C:/ws' },
+  }, 'null/undefined optionals must be dropped (strict codec)')
+  assert.deepEqual(argsFor('session.create', { workspaceId: 'w1' }), { request: { workspaceId: 'w1' } })
+
+  const calls = []
+  const invoker = { invoke: async (request) => { calls.push(request); return { sessionId: 's9' } } }
+  const value = await invokeRemote(invoker, 'session.create', { cwd: 'C:/ws' })
+  assert.deepEqual(value, { sessionId: 's9' })
+  assert.deepEqual(calls[0], { namespace: 'session', method: 'create', args: { request: { cwd: 'C:/ws' } }, signal: undefined })
+})
+
 // ---- integration: the plugin over a mock upstream ----
 
 const startUpstream = () => new Promise((resolve) => {
