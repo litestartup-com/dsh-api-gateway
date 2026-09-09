@@ -31,10 +31,6 @@ export const DEFAULT_PROXY_WHITELIST: readonly string[] = [
 export const isProxyMethodAllowed = (method: string, whitelist: readonly string[]): boolean =>
   whitelist.includes(method)
 
-/** POST URL for one unary apiproxy method: <proxyTarget>/<method>. */
-export const unaryProxyUrl = (proxyTarget: string, method: string): string =>
-  `${proxyTarget.replace(/\/+$/, '')}/${method}`
-
 /** WebSocket URL of the mux downlink: ws(s)://<proxyTarget>/events.mux. */
 export const muxProxyUrl = (proxyTarget: string): string =>
   `${proxyTarget.replace(/\/+$/, '').replace(/^http/, 'ws')}/events.mux`

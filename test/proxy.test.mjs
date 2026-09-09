@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { createServer } from 'node:http'
 import { EventEmitter } from 'node:events'
-import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed, muxProxyUrl, unaryProxyUrl } from '../lib/proxy.js'
+import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed, muxProxyUrl } from '../lib/proxy.js'
+import { argsFor, isMigrated, invokeRemote, REMOTE_METHODS } from '../lib/adapter.js'
 import plugin from '../lib/index.js'
 
 // ---- pure helpers ----
@@ -13,13 +14,6 @@ test('apiKeys carries the secret role on the array itself', () => {
   // top-level field role hides the value from settings.describe.
   const field = plugin.Config.dict.apiKeys
   assert.equal(field?.meta?.role, 'secret', 'the array node must be role-secret')
-})
-
-test('proxy url builders', () => {
-  assert.equal(unaryProxyUrl('http://127.0.0.1:3080/api', 'session.list'), 'http://127.0.0.1:3080/api/session.list')
-  assert.equal(unaryProxyUrl('http://127.0.0.1:3080/api/', 'session.list'), 'http://127.0.0.1:3080/api/session.list')
-  assert.equal(muxProxyUrl('http://127.0.0.1:3080/api'), 'ws://127.0.0.1:3080/api/events.mux')
-  assert.equal(muxProxyUrl('https://host.example/api'), 'wss://host.example/api/events.mux')
 })
 
 test('whitelist: the manager surface is allowed, the privileged plane is not', () => {
@@ -33,6 +27,23 @@ test('whitelist: the manager surface is allowed, the privileged plane is not', (
     'session.search', 'workspace.create', 'subagent.prompt', 'host.version', 'respond.x', '']) {
     assert.equal(isProxyMethodAllowed(m, DEFAULT_PROXY_WHITELIST), false, m + ' must be refused')
   }
+})
+
+// ---- adapter (0.1.2 in-process mapping) ----
+
+test('adapter: session.list maps to session/list with descriptor-named args', async () => {
+  assert.equal(isMigrated('session.list'), true)
+  assert.equal(isMigrated('respond'), false, 'not migrated until Phase 2')
+  assert.deepEqual(REMOTE_METHODS['session.list'], { namespace: 'session', method: 'list' })
+  assert.deepEqual(argsFor('session.list', { cursor: null }), { _request: {} }, 'null cursor must be dropped (strict codec)')
+  assert.deepEqual(argsFor('session.list', { cursor: 'c1' }), { _request: { cursor: 'c1' } })
+  assert.deepEqual(argsFor('session.list', undefined), { _request: {} })
+
+  const calls = []
+  const invoker = { invoke: async (request) => { calls.push(request); return { items: [] } } }
+  const value = await invokeRemote(invoker, 'session.list', { cursor: 'c1' })
+  assert.deepEqual(value, { items: [] })
+  assert.deepEqual(calls[0], { namespace: 'session', method: 'list', args: { _request: { cursor: 'c1' } }, signal: undefined })
 })
 
 // ---- integration: the plugin over a mock upstream ----
@@ -74,11 +85,20 @@ const boot = async (config, upstream) => {
   const web = makeWebServer()
   root.provide('webServer', web)
   root.provide('logger', { debug: () => {}, info: () => {}, warn: () => {} })
+  // 0.1.2 in-process seam: the host's built-in Remote dispatcher (mocked).
+  const invocations = []
+  root.provide('typertGateway', {
+    invoke: async (request) => {
+      invocations.push(request)
+      if (request.method === 'list') return { items: [{ sessionId: 's1', updatedAt: 42, running: false, blank: true }] }
+      throw new Error('mock: unexpected method ' + request.method)
+    },
+  })
   // Object form so cordis validates the Config schema and fills the defaults
   // (prefix, whitelist, ...) exactly as the real host composition does.
   const fiber = root.plugin(plugin, { proxyTarget: upstream.url, ...config })
   await fiber
-  return { root, web, fiber }
+  return { root, web, fiber, invocations }
 }
 
 const teardown = async (booted, upstream) => {
@@ -161,9 +181,9 @@ test('proxy refuses non-whitelisted methods before touching the upstream', async
   }
 })
 
-test('proxy forwards a whitelisted unary call verbatim', async () => {
+test('proxy serves a migrated unary call in-process with the frozen envelope', async () => {
   const upstream = await startUpstream()
-  const { web, fiber } = await boot({ apiKeys: ['k1'] }, upstream)
+  const { web, fiber, invocations } = await boot({ apiKeys: ['k1'] }, upstream)
   try {
     const envelope = JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'session.list', payload: { cursor: null } })
     const res = await call(web, 'POST', '/api-gw/v1/proxy/session.list', {
@@ -171,26 +191,32 @@ test('proxy forwards a whitelisted unary call verbatim', async () => {
       body: Buffer.from(envelope),
     })
     assert.equal(res.statusCode, 200)
-    assert.deepEqual(JSON.parse(res.body), { type: 'server-response', rpcId: 'echo', result: { ok: true, value: { got: envelope } } })
-    assert.equal(upstream.captured.length, 1)
-    assert.equal(upstream.captured[0].url, '/api/session.list')
-    assert.equal(upstream.captured[0].body, envelope, 'the envelope passes through unparsed')
+    assert.deepEqual(JSON.parse(res.body), {
+      type: 'server-response', rpcId: 'r1',
+      result: { ok: true, value: { items: [{ sessionId: 's1', updatedAt: 42, running: false, blank: true }] } },
+    })
+    assert.equal(upstream.captured.length, 0, 'no HTTP upstream request may be made')
+    assert.equal(invocations[0].namespace, 'session')
+    assert.equal(invocations[0].method, 'list')
+    assert.deepEqual(invocations[0].args, { _request: {} })
+    assert.ok(invocations[0].signal instanceof AbortSignal, 'the in-process call carries cancellation')
   } finally {
     await fiber.dispose()
     await upstream.close()
   }
 })
 
-test('proxy forwards respond on its own path', async () => {
+test('proxy reports unmigrated methods honestly (501) instead of touching the dead loopback', async () => {
   const upstream = await startUpstream()
   const { web, fiber } = await boot({ apiKeys: ['k1'] }, upstream)
   try {
     const res = await call(web, 'POST', '/api-gw/v1/proxy/respond', {
       headers: { 'x-api-key': 'k1' },
-      body: Buffer.from('{"type":"client-response","rpcId":"q1","result":{"ok":true,"value":{}}}'),
+      body: Buffer.from('{"type":"client-request","rpcId":"q1","method":"respond","payload":{}}'),
     })
-    assert.equal(res.statusCode, 200)
-    assert.equal(upstream.captured[0].url, '/api/respond')
+    assert.equal(res.statusCode, 501)
+    assert.equal(JSON.parse(res.body).error, 'method_not_migrated')
+    assert.equal(upstream.captured.length, 0)
   } finally {
     await fiber.dispose()
     await upstream.close()
@@ -199,21 +225,22 @@ test('proxy forwards respond on its own path', async () => {
 
 test('auth: no key, wrong key, and Bearer form', async () => {
   const upstream = await startUpstream()
-  const { web, fiber } = await boot({ apiKeys: ['k1'] }, upstream)
+  const { web, fiber, invocations } = await boot({ apiKeys: ['k1'] }, upstream)
   try {
     const none = await call(web, 'POST', '/api-gw/v1/proxy/session.list', { body: Buffer.from('{}') })
     assert.equal(none.statusCode, 401)
-    assert.equal(upstream.captured.length, 0)
+    assert.equal(invocations.length, 0)
     const wrong = await call(web, 'POST', '/api-gw/v1/proxy/session.list', {
       headers: { 'x-api-key': 'nope' }, body: Buffer.from('{}'),
     })
     assert.equal(wrong.statusCode, 401)
-    assert.equal(upstream.captured.length, 0)
+    assert.equal(invocations.length, 0)
     const bearer = await call(web, 'POST', '/api-gw/v1/proxy/session.list', {
-      headers: { authorization: 'Bearer k1' }, body: Buffer.from('{}'),
+      headers: { authorization: 'Bearer k1' },
+      body: Buffer.from('{"type":"client-request","rpcId":"r1","method":"session.list","payload":{}}'),
     })
     assert.equal(bearer.statusCode, 200)
-    assert.equal(upstream.captured.length, 1)
+    assert.equal(invocations.length, 1)
   } finally {
     await fiber.dispose()
     await upstream.close()

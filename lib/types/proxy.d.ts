@@ -16,7 +16,5 @@
 export declare const DEFAULT_PROXY_WHITELIST: readonly string[];
 /** Whether a proxied method may be forwarded. */
 export declare const isProxyMethodAllowed: (method: string, whitelist: readonly string[]) => boolean;
-/** POST URL for one unary apiproxy method: <proxyTarget>/<method>. */
-export declare const unaryProxyUrl: (proxyTarget: string, method: string) => string;
 /** WebSocket URL of the mux downlink: ws(s)://<proxyTarget>/events.mux. */
 export declare const muxProxyUrl: (proxyTarget: string) => string;
