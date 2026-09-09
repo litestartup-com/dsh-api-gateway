@@ -162,7 +162,7 @@ const makeWebServer = () => {
   }
 }
 
-const boot = async (config, upstream) => {
+const boot = async (config, upstream, { sessions = null } = {}) => {
   const root = new Context()
   const web = makeWebServer()
   root.provide('webServer', web)
@@ -176,6 +176,9 @@ const boot = async (config, upstream) => {
       throw new Error('mock: unexpected method ' + request.method)
     },
   })
+  // Optional: the sandbox-mode route needs the host session store; most tests
+  // boot without it and never touch that route.
+  if (sessions !== null) root.provide('sessions', sessions)
   // Object form so cordis validates the Config schema and fills the defaults
   // (prefix, whitelist, ...) exactly as the real host composition does.
   const fiber = root.plugin(plugin, { proxyTarget: upstream.url, ...config })
@@ -339,6 +342,66 @@ test('respond route: old apiproxy receipts on both paths, auth first, never touc
       assert.deepEqual(JSON.parse(res.body), { accepted: false, reason: 'not-pending' })
     }
     assert.equal(upstream.captured.length, 0, 'respond never touches the HTTP upstream')
+  } finally {
+    await fiber.dispose()
+    await upstream.close()
+  }
+})
+
+test('sandbox-mode route: pins live sessions via the in-process write path', async () => {
+  const upstream = await startUpstream()
+  const appended = []
+  const fakeSession = { id: 's-live', append: (type, data) => appended.push({ type, data }) }
+  const { web, fiber } = await boot({ apiKeys: ['k1'] }, upstream, {
+    sessions: { get: (id) => (id === 's-live' ? fakeSession : undefined) },
+  })
+  try {
+    // Auth first.
+    const anon = await call(web, 'POST', '/api-gw/v1/sessions/s-live/sandbox-mode', {
+      body: Buffer.from('{"mode":"workspace-write"}'),
+    })
+    assert.equal(anon.statusCode, 401)
+
+    // danger-full-access stays a host-UI decision.
+    const invalid = await call(web, 'POST', '/api-gw/v1/sessions/s-live/sandbox-mode', {
+      headers: { 'x-api-key': 'k1' },
+      body: Buffer.from('{"mode":"danger-full-access"}'),
+    })
+    assert.equal(invalid.statusCode, 400)
+    assert.equal(JSON.parse(invalid.body).error, 'invalid_mode')
+
+    // The write path: exactly one sandbox/mode log event on the session.
+    const ok = await call(web, 'POST', '/api-gw/v1/sessions/s-live/sandbox-mode', {
+      headers: { 'x-api-key': 'k1' },
+      body: Buffer.from('{"mode":"workspace-write"}'),
+    })
+    assert.equal(ok.statusCode, 200)
+    assert.deepEqual(JSON.parse(ok.body), { sessionId: 's-live', mode: 'workspace-write' })
+    assert.deepEqual(appended, [{ type: 'sandbox/mode', data: { mode: 'workspace-write' } }])
+
+    // Only live (attached) sessions can be pinned.
+    const unknown = await call(web, 'POST', '/api-gw/v1/sessions/s-none/sandbox-mode', {
+      headers: { 'x-api-key': 'k1' },
+      body: Buffer.from('{"mode":"read-only"}'),
+    })
+    assert.equal(unknown.statusCode, 409)
+    assert.equal(JSON.parse(unknown.body).error, 'session_not_live')
+  } finally {
+    await fiber.dispose()
+    await upstream.close()
+  }
+})
+
+test('sandbox-mode route: a host without the session store degrades to 501', async () => {
+  const upstream = await startUpstream()
+  const { web, fiber } = await boot({ apiKeys: ['k1'] }, upstream) // no sessions service provided
+  try {
+    const res = await call(web, 'POST', '/api-gw/v1/sessions/s1/sandbox-mode', {
+      headers: { 'x-api-key': 'k1' },
+      body: Buffer.from('{"mode":"read-only"}'),
+    })
+    assert.equal(res.statusCode, 501)
+    assert.equal(JSON.parse(res.body).error, 'service_unavailable')
   } finally {
     await fiber.dispose()
     await upstream.close()
