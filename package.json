@@ -38,7 +38,7 @@
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
     "prepack": "tsc -p tsconfig.json",
-    "test": "node --test test/events.test.mjs test/http.test.mjs test/proxy.test.mjs test/sandbox-mode.test.mjs",
+    "test": "node --test test/events.test.mjs test/http.test.mjs test/proxy.test.mjs test/sandbox-mode.test.mjs test/streams.test.mjs",
     "proxy-host": "node scripts/proxy-host.mjs"
   },
   "dsh": {

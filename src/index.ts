@@ -33,8 +33,9 @@ import { createRequire } from 'node:module'
 import z from '@deepseek-ai/schemastery'
 import { WebSocket, WebSocketServer } from 'ws'
 import { provisionDecision, resolveCorsOrigin, routeSegments } from './http.js'
-import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed, muxProxyUrl } from './proxy.js'
+import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed } from './proxy.js'
 import { invokeRemote, isMigrated, readHistory, type GatewayInvoker, type GatewayStreamer } from './adapter.js'
+import { FollowRegistry } from './streams.js'
 import { isRemoteSandboxMode, REMOTE_SANDBOX_MODES } from './sandbox-mode.js'
 // 加载 ctx.typertGateway 的 Context 模块增补（0.1.2 内置 Remote 分发器）。
 import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway/types'
@@ -295,6 +296,15 @@ export default {
       }
       try {
         const value = await invokeRemote(gateway as GatewayInvoker, method, envelope.payload, AbortSignal.timeout(PROXY_TIMEOUT_MS))
+        // 直播桥：会话经网关建立/唤醒时即入流（follow 流事件经 mux 广播）。
+        if (method === 'session.create') {
+          const created = value as { sessionId?: unknown }
+          if (typeof created.sessionId === 'string') registry.ensure(created.sessionId)
+        }
+        if (method === 'session.prompt') {
+          const p = (envelope.payload ?? {}) as { sessionId?: unknown }
+          if (typeof p.sessionId === 'string') registry.ensure(p.sessionId)
+        }
         return sendJson(res, 200, { type: 'server-response', rpcId, result: { ok: true, value } })
       } catch (error) {
         const code = (error as { code?: unknown })?.code
@@ -309,11 +319,36 @@ export default {
     }
 
     /**
-     * The mux WebSocket pipe: one outer socket per client, one inner client to
-     * the harness mux. Downlink only, mirroring the harness: any client frame
-     * closes the socket with 1008, and only upstream frames flow outward.
-     * Reconnect belongs to the client (the manager), not to the proxy.
+     * 0.1.2 mux 桥：外层 WS 客户端集合 + 每会话 follow 流注册表。
+     * 事件泵把增量 SessionEventEntry 与快照投影翻译成老 mux 帧广播
+     * （mirror 0.1.1 全量广播语义；manager 本地按 sessionId 过滤）。
      */
+    const outerSockets = new Set<import('ws').WebSocket>()
+    let registry: FollowRegistry
+    {
+      const streamer = {
+        stream: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
+          const gateway = ctx.get('typertGateway', true) as TypertGateway | undefined
+          if (gateway === undefined || gateway.stream === undefined) {
+            throw new Error('host typertGateway stream is not available')
+          }
+          return gateway.stream(request)
+        },
+      }
+      registry = new FollowRegistry(
+        streamer,
+        (json) => {
+          for (const ws of outerSockets) {
+            if (ws.readyState === WebSocket.OPEN) {
+              try { ws.send(json) } catch { /* socket going away */ }
+            }
+          }
+        },
+        (line) => ctx.logger?.warn?.(line),
+      )
+    }
+
+    /** The mux WebSocket route: downlink only, broadcast via the registry. */
     const proxyUpgrade = (wss: WebSocketServer, req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer) => {
       if (!authorized(req)) {
         // Refuse before protocol negotiation, so an unauthenticated caller
@@ -322,16 +357,15 @@ export default {
         return
       }
       wss.handleUpgrade(req, socket, head, (outer) => {
-        const inner = new WebSocket(muxProxyUrl(cfg.proxyTarget))
         outer.on('message', () => outer.close(1008, 'downlink only'))
-        outer.on('close', () => { try { inner.close() } catch { /* noop */ } })
-        outer.on('error', () => { try { inner.close() } catch { /* noop */ } })
-        inner.onmessage = (event: { data: unknown }) => {
-          if (outer.readyState !== WebSocket.OPEN) return
-          try { outer.send(String(event.data)) } catch { /* socket going away */ }
+        outerSockets.add(outer)
+        outer.on('close', () => { outerSockets.delete(outer) })
+        outer.on('error', () => { outerSockets.delete(outer) })
+        // 当前挂载会话全部入流（新会话经 create/prompt 路由触发 ensure）。
+        const sessions = ctx.get('sessions', true) as { list?: () => Array<{ id: string }> } | undefined
+        if (sessions?.list !== undefined) {
+          for (const s of sessions.list()) registry.ensure(s.id)
         }
-        inner.onclose = () => { try { outer.close() } catch { /* noop */ } }
-        inner.onerror = () => { try { outer.close() } catch { /* noop */ } }
       })
     }
 
