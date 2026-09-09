@@ -36,18 +36,25 @@ export const buildEventFrame = (sessionId: string, event: unknown): string => {
 /**
  * 快照投影 → 逐 key 的 session/projection 帧（老契约：一次一个 key）。
  * `values` 的每个顶层键一帧；manager 的 extractProjectionUsage/Title 按 key 认领。
+ * seq 取投影水位 asOfSeq（老契约帧形带 seq）。
  */
 export const buildProjectionFrames = (sessionId: string, projections: unknown): string[] => {
-  const values = (projections as { values?: Record<string, unknown> } | null | undefined)?.values
+  const block = projections as { asOfSeq?: unknown; values?: Record<string, unknown> } | null | undefined
+  const values = block?.values
   if (values === undefined) return []
-  return Object.entries(values).map(([key, value]) =>
-    JSON.stringify({
-      type: 'server-request',
-      rpcId: `apigw-${Math.random().toString(16).slice(2, 10)}`,
-      method: 'session/projection',
-      payload: { type: 'session/projection', sessionId, key, value, seq: 0 },
-    }),
-  )
+  const seq = typeof block?.asOfSeq === 'number' ? block.asOfSeq : 0
+  return Object.entries(values).map(([key, value]) => buildProjectionFrame(sessionId, key, value, seq))
+}
+
+/** 单条 live 投影增量 → 老 session/projection 帧（control 流逐条投递）。 */
+export const buildProjectionFrame = (sessionId: string, key: string, value: unknown, seq: number): string => {
+  const rpcId = `apigw-${Math.random().toString(16).slice(2, 10)}`
+  return JSON.stringify({
+    type: 'server-request',
+    rpcId,
+    method: 'session/projection',
+    payload: { type: 'session/projection', sessionId, key, value, seq },
+  })
 }
 
 /** 会话 follow 流注册表：幂等 ensure、事件泵、广播、关闭。 */
@@ -114,5 +121,77 @@ export class FollowRegistry {
 
   known(): string[] {
     return [...this.streams.keys()]
+  }
+}
+
+/**
+ * 宿主级 `session/control` 流桥（0.1.2-rc.1 源码实证，session-controller
+ * control.ts）：live projections **不在** follow 流里（其联合只有 snapshot |
+ * SessionEventEntry），而在 host-wide control 流——首帧 baseline
+ * （全部会话的 {asOfSeq, values}）+ `{type:'projection', sessionId, key,
+ * value, seq}` 增量（sessionProjections.onChanged 驱动）。翻译成老 mux 的
+ * 逐 key session/projection 帧广播。
+ *
+ * queue/jobs 帧不翻译：老契约里 manager 的 mux 分发显式忽略它们，无消费者。
+ * 流终止（宿主失败）3 秒后重开，mirror manager mux 的重连语义。
+ */
+export class ControlBridge {
+  private disposed = false
+  private running = false
+  private timer: ReturnType<typeof setTimeout> | null = null
+
+  constructor(
+    private readonly streamer: SessionStreamer,
+    private readonly broadcast: (json: string) => void,
+    private readonly log: (line: string) => void,
+    private readonly retryMs = 3_000,
+  ) {}
+
+  /** 开流并泵帧；幂等，dispose 后不再重连。 */
+  start(): void {
+    this.disposed = false
+    void this.loop()
+  }
+
+  private async loop(): Promise<void> {
+    if (this.running || this.disposed) return
+    this.running = true
+    try {
+      const stream = await this.streamer.stream({ namespace: 'session', method: 'control', args: {} })
+      for await (const frame of stream) {
+        const f = frame as {
+          type?: unknown
+          value?: unknown
+          sessionId?: unknown
+          key?: unknown
+          seq?: unknown
+          [k: string]: unknown
+        }
+        if (f.type === 'baseline') {
+          // value.projections: Record<sessionId, { asOfSeq, values }> —— 每会话
+          // 每个 key 一帧（与 follow 快照投影同形）。
+          const projections = (f.value as { projections?: Record<string, unknown> } | null | undefined)?.projections ?? {}
+          for (const [sessionId, block] of Object.entries(projections)) {
+            for (const json of buildProjectionFrames(sessionId, block)) this.broadcast(json)
+          }
+          continue
+        }
+        if (f.type === 'projection' && typeof f.sessionId === 'string' && typeof f.key === 'string') {
+          this.broadcast(buildProjectionFrame(f.sessionId, f.key, f.value, typeof f.seq === 'number' ? f.seq : 0))
+        }
+      }
+    } catch (error) {
+      this.log(`[dsh-api-gw] control stream ended: ${String((error as Error)?.message ?? error)}`)
+    } finally {
+      this.running = false
+    }
+    if (!this.disposed) {
+      this.timer = setTimeout(() => { this.timer = null; void this.loop() }, this.retryMs)
+    }
+  }
+
+  dispose(): void {
+    this.disposed = true
+    if (this.timer !== null) { clearTimeout(this.timer); this.timer = null }
   }
 }

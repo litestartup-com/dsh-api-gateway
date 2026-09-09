@@ -37,6 +37,7 @@ import { provisionDecision, resolveCorsOrigin, routeSegments } from './http.js'
 import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed } from './proxy.js'
 import { invokeRemote, isMigrated, readHistory, type GatewayInvoker, type GatewayStreamer } from './adapter.js'
 import { FollowRegistry } from './streams.js'
+import { ControlBridge } from './streams.js'
 import { Answerer } from './answerer.js'
 import { isRemoteSandboxMode, REMOTE_SANDBOX_MODES } from './sandbox-mode.js'
 // 加载 ctx.typertGateway 的 Context 模块增补（0.1.2 内置 Remote 分发器）。
@@ -357,6 +358,7 @@ export default {
     const outerSockets = new Set<import('ws').WebSocket>()
     let registry: FollowRegistry
     let answerer: Answerer
+    let controlBridge: ControlBridge
     {
       const streamer = {
         stream: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
@@ -379,6 +381,19 @@ export default {
         (line) => ctx.logger?.warn?.(line),
       )
       answerer = new Answerer(
+        (json) => {
+          for (const ws of outerSockets) {
+            if (ws.readyState === WebSocket.OPEN) {
+              try { ws.send(json) } catch { /* socket going away */ }
+            }
+          }
+        },
+        (line) => ctx.logger?.warn?.(line),
+      )
+      // live projections 桥（0.1.2 实测）：host-wide session/control 流的
+      // baseline + projection 增量 → 老 session/projection 帧。
+      controlBridge = new ControlBridge(
+        streamer,
         (json) => {
           for (const ws of outerSockets) {
             if (ws.readyState === WebSocket.OPEN) {
@@ -662,7 +677,10 @@ export default {
       // answerer 处置（effect teardown 时调用返回的 disposer），不需要
       // 单独记 dispose。
       answerer.mount(ctx)
+      // live projections 桥：一个宿主级 control 流，随插件生命周期开关。
+      controlBridge.start()
       return () => {
+        controlBridge.dispose()
         if (disposeRoute !== null) { try { disposeRoute() } catch { /* noop */ } ; disposeRoute = null }
         while (disposeUpgrades.length > 0) { try { disposeUpgrades.pop()!() } catch { /* noop */ } }
         // Terminated rather than closed politely: an unload must not wait on
