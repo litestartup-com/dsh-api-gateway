@@ -1,5 +1,5 @@
 /**
- * dsh-api-gateway — 0.1.2 适配层（进程内 typertGateway 直调）。
+ * ohdsh-api-facade — 0.1.2 适配层（进程内 typertGateway 直调）。
  *
  * 0.1.2 起网关不再回环 HTTP 转发（/api 带两层鉴权、dotted 端点 404），
  * 改为直调宿主内置的 `typertGateway`（@deepseek-ai/dsh-api-gateway 提供的

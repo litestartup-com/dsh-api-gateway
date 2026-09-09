@@ -1,5 +1,5 @@
 /**
- * dsh-api-gateway — proxy plumbing (pure).
+ * ohdsh-api-facade — proxy plumbing (pure).
  *
  * 白名单与守卫，不带 Node/Cordis 面，保持直接可单测（见 test/proxy.test.mjs）。
  * 0.1.2 起网关不再回环转发：白名单是「进程内 facade 可服务的方法集合」。

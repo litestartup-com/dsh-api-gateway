@@ -1,5 +1,5 @@
 /**
- * dsh-api-gateway — Host half (0.1.2 起：in-process facade，不再是回环代理).
+ * ohdsh-api-facade — Host half (0.1.2 起：in-process facade，不再是回环代理).
  *
  * The plugin no longer drives agents. It is a thin, fail-closed gateway that
  * lets an external client (the manager) reach the harness session surface from
@@ -16,7 +16,7 @@
  * never parses the RPC envelope: it forwards bytes, so the wire
  * contract belongs to DSH and the manager, not to this plugin.
  *
- * Install: pnpm add dsh-api-gateway, then add one row to the host composition
+ * Install: pnpm add ohdsh-api-facade, then add one row to the host composition
  * (see README / examples/cordis.yml). Uninstall: remove the row and restart.
  *
  * Composition plane: this plugin publishes a cross-session HTTP surface, so it

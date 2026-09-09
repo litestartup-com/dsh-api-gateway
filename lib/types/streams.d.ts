@@ -1,5 +1,5 @@
 /**
- * dsh-api-gateway — 0.1.2 mux 桥（每会话 follow 流 → 老 mux 帧广播）。
+ * ohdsh-api-facade — 0.1.2 mux 桥（每会话 follow 流 → 老 mux 帧广播）。
  *
  * 0.1.2 无全量事件广播：直播流 = 每会话一条 `session/follow` 流
  * （快照帧 + SessionEventEntry 增量）。本模块维护「会话 → 活跃流」注册表，

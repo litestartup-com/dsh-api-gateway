@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
-  title: dsh-api-gateway (loopback proxy)
+  title: ohdsh-api-facade (in-process facade)
   version: 0.2.0
   description: >
-    Authenticated, fail-closed loopback proxy over the DeepSeek Harness /api
+    Authenticated, fail-closed in-host facade over the DeepSeek Harness session surface
     (apiproxy) surface. Unary calls and respond pass through verbatim; the mux
     is a downlink-only WebSocket pipe. Wire envelopes belong to apiproxy, not
     to this proxy: the proxy only checks the method name on the path.

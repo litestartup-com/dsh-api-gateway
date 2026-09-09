@@ -1,8 +1,8 @@
-# dsh-api-gateway bundle layer.
+# ohdsh-api-facade bundle layer.
 #
-# `dsh plugin add dsh-api-gateway` applies this patch to the composed config.
+# `dsh plugin add ohdsh-api-facade` applies this patch to the composed config.
 # Every option has a schema default — override a row key in your own profile
 # patch layer instead of editing this file.
 - insert:
-    - id: dsh-api-gw
-      name: dsh-api-gateway
+    - id: ohdsh-api-facade
+      name: ohdsh-api-facade

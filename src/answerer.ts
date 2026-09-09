@@ -1,5 +1,5 @@
 /**
- * dsh-api-gateway — 0.1.2 in-host waterfall 应答器（respond 桥）。
+ * ohdsh-api-facade — 0.1.2 in-host waterfall 应答器（respond 桥）。
  *
  * manager 的问答/审批走老契约：mux 收到 question/approval 帧 → respond 回填。
  * 0.1.2 的正缝 = 网关直接挂两个 Cordis waterfall 监听器（不带 scope 标签的
@@ -79,7 +79,7 @@ export class Answerer {
           // 不带 ASK_CANCELLED 抛错而 next() 会让浏览器 UI 重问一遍同一问题。
           throw { name: 'UserQuestionError', message: 'the user cancelled ask_user_question', code: 'ASK_CANCELLED' }
         }
-        this.log(`[dsh-api-gw] question ${rpcId} unanswered (${String((error as Error)?.message ?? error)}), delegating`)
+        this.log(`[ohdsh-api-facade] question ${rpcId} unanswered (${String((error as Error)?.message ?? error)}), delegating`)
         return next()
       }
     })
@@ -112,7 +112,7 @@ export class Answerer {
         }
         return next()
       } catch (error) {
-        this.log(`[dsh-api-gw] approval ${approvalId} unanswered (${String((error as Error)?.message ?? error)}), delegating`)
+        this.log(`[ohdsh-api-facade] approval ${approvalId} unanswered (${String((error as Error)?.message ?? error)}), delegating`)
         return next()
       }
     })

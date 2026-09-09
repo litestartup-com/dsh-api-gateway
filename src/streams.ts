@@ -1,5 +1,5 @@
 /**
- * dsh-api-gateway — 0.1.2 mux 桥（每会话 follow 流 → 老 mux 帧广播）。
+ * ohdsh-api-facade — 0.1.2 mux 桥（每会话 follow 流 → 老 mux 帧广播）。
  *
  * 0.1.2 无全量事件广播：直播流 = 每会话一条 `session/follow` 流
  * （快照帧 + SessionEventEntry 增量）。本模块维护「会话 → 活跃流」注册表，
@@ -85,7 +85,7 @@ export class FollowRegistry {
         args: { request: { address: { kind: 'session', sessionId } } },
       })
     } catch (error) {
-      this.log(`[dsh-api-gw] follow ${sessionId} open failed: ${String((error as Error)?.message ?? error)}`)
+      this.log(`[ohdsh-api-facade] follow ${sessionId} open failed: ${String((error as Error)?.message ?? error)}`)
       return
     }
     this.streams.set(sessionId, stream)
@@ -106,7 +106,7 @@ export class FollowRegistry {
         }
       }
     } catch (error) {
-      this.log(`[dsh-api-gw] follow ${sessionId} stream ended: ${String((error as Error)?.message ?? error)}`)
+      this.log(`[ohdsh-api-facade] follow ${sessionId} stream ended: ${String((error as Error)?.message ?? error)}`)
     } finally {
       this.streams.delete(sessionId)
       this.pumpLoops.delete(sessionId)
@@ -181,7 +181,7 @@ export class ControlBridge {
         }
       }
     } catch (error) {
-      this.log(`[dsh-api-gw] control stream ended: ${String((error as Error)?.message ?? error)}`)
+      this.log(`[ohdsh-api-facade] control stream ended: ${String((error as Error)?.message ?? error)}`)
     } finally {
       this.running = false
     }

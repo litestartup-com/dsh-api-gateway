@@ -248,7 +248,7 @@ test('index + health: no auth needed, reports service and upstream probe', async
     const index = await call(web, 'GET', '/api-gw/v1')
     assert.equal(index.statusCode, 200)
     const body = JSON.parse(index.body)
-    assert.equal(body.service, 'dsh-api-gw')
+    assert.equal(body.service, 'ohdsh-api-facade')
     assert.ok(Array.isArray(body.endpoints))
     const health = await call(web, 'GET', '/api-gw/v1/health')
     assert.equal(health.statusCode, 200)

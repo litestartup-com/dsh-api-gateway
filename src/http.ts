@@ -1,5 +1,5 @@
 /**
- * dsh-api-gateway — HTTP plumbing (pure).
+ * ohdsh-api-facade — HTTP plumbing (pure).
  *
  * Request-shaped helpers with no Node/Cordis surface, so they stay directly
  * unit-testable (see test/http.test.mjs).

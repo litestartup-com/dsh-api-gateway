@@ -1,5 +1,5 @@
 /**
- * dsh-api-gateway — Host half (0.1.2 起：in-process facade，不再是回环代理).
+ * ohdsh-api-facade — Host half (0.1.2 起：in-process facade，不再是回环代理).
  *
  * The plugin no longer drives agents. It is a thin, fail-closed gateway that
  * lets an external client (the manager) reach the harness session surface from
@@ -16,7 +16,7 @@
  * never parses the RPC envelope: it forwards bytes, so the wire
  * contract belongs to DSH and the manager, not to this plugin.
  *
- * Install: pnpm add dsh-api-gateway, then add one row to the host composition
+ * Install: pnpm add ohdsh-api-facade, then add one row to the host composition
  * (see README / examples/cordis.yml). Uninstall: remove the row and restart.
  *
  * Composition plane: this plugin publishes a cross-session HTTP surface, so it
@@ -294,7 +294,7 @@ export default {
         } catch (error) {
           const code = (error as { code?: unknown })?.code
           const message = String((error as Error)?.message ?? error)
-          ctx.logger?.warn?.('[dsh-api-gw] in-process session.history failed: ' + message)
+          ctx.logger?.warn?.('[ohdsh-api-facade] in-process session.history failed: ' + message)
           return sendJson(res, 200, {
             type: 'server-response',
             rpcId,
@@ -324,7 +324,7 @@ export default {
       } catch (error) {
         const code = (error as { code?: unknown })?.code
         const message = String((error as Error)?.message ?? error)
-        ctx.logger?.warn?.('[dsh-api-gw] in-process ' + method + ' failed: ' + message)
+        ctx.logger?.warn?.('[ohdsh-api-facade] in-process ' + method + ' failed: ' + message)
         return sendJson(res, 200, {
           type: 'server-response',
           rpcId,
@@ -449,7 +449,7 @@ export default {
       setCors(res, req)
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
       const seg = routeSegments(cfg.prefix, req.url)
-      if (seg === null) return sendJson(res, 404, { error: 'not_found', service: 'dsh-api-gw' })
+      if (seg === null) return sendJson(res, 404, { error: 'not_found', service: 'ohdsh-api-facade' })
 
       // health stays reachable while disabled, for monitoring
       if (seg.length === 1 && seg[0] === 'health' && req.method === 'GET') {
@@ -465,7 +465,7 @@ export default {
 
       if (seg.length === 0 && req.method === 'GET') {
         return sendJson(res, 200, {
-          service: 'dsh-api-gw', version: VERSION,
+          service: 'ohdsh-api-facade', version: VERSION,
           endpoints: [
             { method: 'GET', path: cfg.prefix + '/health', auth: false },
             { method: 'POST', path: cfg.prefix + '/key', auth: 'first call only' },
@@ -517,11 +517,11 @@ export default {
           cfg = { ...cfg, provisionedKey: minted }
         } else {
           volatileKey = minted
-          ctx.logger?.warn?.('[dsh-api-gw] no settings provider: the provisioned key is in memory only and will not survive a restart. Set config.apiKeys for a durable key.')
+          ctx.logger?.warn?.('[ohdsh-api-facade] no settings provider: the provisioned key is in memory only and will not survive a restart. Set config.apiKeys for a durable key.')
         }
         // Never logged: the log is the one place a secret leaks without anyone
         // authenticating for it.
-        ctx.logger?.info?.('[dsh-api-gw] API key provisioned (one-time bootstrap now closed)')
+        ctx.logger?.info?.('[ohdsh-api-facade] API key provisioned (one-time bootstrap now closed)')
         return sendJson(res, 200, { apiKey: minted, persisted: settingsScope !== null })
       }
 
@@ -556,7 +556,7 @@ export default {
         } else {
           volatileKey = minted
         }
-        ctx.logger?.info?.('[dsh-api-gw] API key rotated')
+        ctx.logger?.info?.('[ohdsh-api-facade] API key rotated')
         return sendJson(res, 200, { apiKey: minted, persisted: settingsScope !== null })
       }
 
@@ -569,7 +569,7 @@ export default {
         try {
           await dispatchRespond(req, res)
         } catch (error) {
-          ctx.logger?.warn?.('[dsh-api-gw] respond failed: ' + String(error))
+          ctx.logger?.warn?.('[ohdsh-api-facade] respond failed: ' + String(error))
           if (res.headersSent) { try { res.destroy() } catch { /* noop */ } ; return }
           return sendJson(res, 500, { error: 'internal_error', detail: errorDetail(error) })
         }
@@ -588,7 +588,7 @@ export default {
         try {
           await proxyInProcess(req, res, method)
         } catch (error) {
-          ctx.logger?.warn?.('[dsh-api-gw] proxy ' + method + ' failed: ' + String(error))
+          ctx.logger?.warn?.('[ohdsh-api-facade] proxy ' + method + ' failed: ' + String(error))
           if (res.headersSent) { try { res.destroy() } catch { /* noop */ } ; return }
           return sendJson(res, 502, { error: 'upstream_unreachable', detail: errorDetail(error) })
         }
@@ -629,7 +629,7 @@ export default {
         }
         if (body.mode === 'danger-full-access') {
           // 风险告知：每次命中都留一条醒目告警（拍板：不做环境限制，只告知）。
-          ctx.logger?.warn?.(`[dsh-api-gw] session ${sessionId} pinned to danger-full-access by a remote client (allowFullAccess is ON)`)
+          ctx.logger?.warn?.(`[ohdsh-api-facade] session ${sessionId} pinned to danger-full-access by a remote client (allowFullAccess is ON)`)
         }
         // Soft dependency: a host without the session store degrades cleanly
         // instead of breaking plugin startup (RULE 2).
@@ -669,7 +669,7 @@ export default {
         // The promise is returned so the carrier (and tests) can await the
         // full response lifecycle; SSE-style long responses were removed in S3.
         handler: (req, res) => Promise.resolve(dispatch(req, res)).catch((error) => {
-          ctx.logger?.warn?.('[dsh-api-gw] request failed: ' + String(error))
+          ctx.logger?.warn?.('[ohdsh-api-facade] request failed: ' + String(error))
           try {
             if (res.headersSent) res.destroy()
             else sendJson(res, 500, { error: 'internal_error', detail: errorDetail(error) })
@@ -715,7 +715,7 @@ export default {
     // redacts them. Non-fatal by design: a deployment without a settings
     // provider simply keeps the composition-row config.
     //
-    // The namespace is 'dsh-api-gw': DSH ships a built-in
+    // The namespace is 'ohdsh-api-facade': DSH ships a built-in
     // @deepseek-ai/dsh-api-gateway (the typert Remote dispatcher), so a card
     // keyed 'api-gateway' would be indistinguishable from it in the plugin list.
     ctx.inject(['settings'], (sctx) => {
@@ -723,7 +723,7 @@ export default {
         // 0.1.2（A2-10）：settingsNamespace 运行时导出已删——命名空间是编译期
         // 校验的字符串字面量（小写连字符标识符），register 签名不变。
         const provider: SettingsProvider = sctx.settings
-        const scope = provider.register('dsh-api-gw', Config, { base: config, applies: 'live' })
+        const scope = provider.register('ohdsh-api-facade', Config, { base: config, applies: 'live' })
         settingsScope = scope
         const resolved = scope.get()
         const prefixChanged = resolved.prefix !== cfg.prefix
@@ -735,13 +735,13 @@ export default {
           if (changed) mountRoutes()
         })
       } catch (error) {
-        ctx.logger?.warn?.('[dsh-api-gw] settings namespace not registered: ' + String(error))
+        ctx.logger?.warn?.('[ohdsh-api-facade] settings namespace not registered: ' + String(error))
       }
     })
 
-    ctx.logger?.info?.('[dsh-api-gw] mounted at ' + cfg.prefix + ' (facade, enabled=' + String(cfg.enabled) + ')')
+    ctx.logger?.info?.('[ohdsh-api-facade] mounted at ' + cfg.prefix + ' (facade, enabled=' + String(cfg.enabled) + ')')
     if (cfg.allowFullAccess) {
-      ctx.logger?.warn?.('[dsh-api-gw] allowFullAccess is ON: remote clients may pin sessions to danger-full-access. This is an operator opt-in with no environment restriction — review before leaving it enabled.')
+      ctx.logger?.warn?.('[ohdsh-api-facade] allowFullAccess is ON: remote clients may pin sessions to danger-full-access. This is an operator opt-in with no environment restriction — review before leaving it enabled.')
     }
   },
 }
