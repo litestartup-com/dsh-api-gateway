@@ -33,6 +33,14 @@ export const REMOTE_METHODS: Readonly<Record<string, { readonly namespace: strin
   'session.create': { namespace: 'session', method: 'create' },
   'session.prompt': { namespace: 'session', method: 'prompt' },
   'session.cancel': { namespace: 'session', method: 'cancel' },
+  // 2026-09-09 拍板「功能面 = web 全集」：白名单余下方法全部补映射
+  // （老契约字段形状取自生产安装的 0.1.1 dsh-host-apiproxy sessions.d.ts 实证）。
+  'session.rename': { namespace: 'session', method: 'rename' },
+  'session.fork': { namespace: 'session', method: 'fork' },
+  'session.updateQueue': { namespace: 'session', method: 'updateQueue' },
+  'session.attachment': { namespace: 'session', method: 'attachment' },
+  'session.models': { namespace: 'session', method: 'modelCatalog' },
+  'session.selectModel': { namespace: 'session', method: 'selectModel' },
 }
 
 /**
@@ -93,8 +101,89 @@ export const argsFor = (method: string, payload: unknown): Record<string, unknow
       const p = (payload ?? {}) as { sessionId?: unknown }
       return { request: { ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}) } }
     }
+    // ---- 2026-09-09 补齐：老契约（0.1.1 sessions.d.ts）→ 0.1.2 request 命名 ----
+    case 'session.rename': {
+      const p = (payload ?? {}) as { sessionId?: unknown; title?: unknown }
+      return {
+        request: {
+          ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}),
+          ...(typeof p.title === 'string' ? { title: p.title } : {}),
+        },
+      }
+    }
+    case 'session.fork': {
+      const p = (payload ?? {}) as { sessionId?: unknown; atSeq?: unknown }
+      return {
+        request: {
+          ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}),
+          ...(typeof p.atSeq === 'number' ? { atSeq: p.atSeq } : {}),
+        },
+      }
+    }
+    case 'session.updateQueue': {
+      // QueueAction 词汇两端一致（edit/remove/steer），原样透传。
+      const p = (payload ?? {}) as { sessionId?: unknown; itemId?: unknown; action?: unknown }
+      return {
+        request: {
+          ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}),
+          ...(typeof p.itemId === 'string' ? { itemId: p.itemId } : {}),
+          ...(p.action === undefined ? {} : { action: p.action }),
+        },
+      }
+    }
+    case 'session.attachment': {
+      const p = (payload ?? {}) as { sessionId?: unknown; attachmentId?: unknown }
+      return {
+        request: {
+          ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}),
+          ...(typeof p.attachmentId === 'string' ? { attachmentId: p.attachmentId } : {}),
+        },
+      }
+    }
+    case 'session.selectModel': {
+      const p = (payload ?? {}) as { sessionId?: unknown; provider?: unknown; model?: unknown; reasoningEffort?: unknown }
+      return {
+        request: {
+          ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}),
+          ...(typeof p.provider === 'string' ? { provider: p.provider } : {}),
+          ...(typeof p.model === 'string' ? { model: p.model } : {}),
+          ...(typeof p.reasoningEffort === 'string' ? { reasoningEffort: p.reasoningEffort } : {}),
+        },
+      }
+    }
+    case 'session.models':
+      // 0.1.2 只有 host-wide modelCatalog()（无 request 参数）——strict codec
+      // 下多传 args 会被拒，直接给空 args；返回值由 invokeRemote 翻译回老形状。
+      return {}
     default:
       return {}
+  }
+}
+
+/**
+ * 0.1.2 `session/modelCatalog` 返回值 → 老契约 `SessionModels`
+ * （两端口径都来自 dsh 类型实证：0.1.1 dsh-host-apiproxy sessions.d.ts 的
+ * SessionModels vs 0.1.2 session-controller types.ts 的 ModelCatalog）：
+ * - `current` ← `default`（老契约的「会话下一步模型选择」）
+ * - `routable` ← `routableProviders` 包含 `default.provider`（老契约语义 =
+ *   当前 provider 是否有 adapter 在服务）
+ * - `groups` / `failures` 字段形状两端一致，原样透传。
+ */
+export const translateModelCatalog = (catalog: unknown): unknown => {
+  const c = catalog as {
+    default?: { provider?: unknown } | null
+    routableProviders?: unknown
+    groups?: unknown
+    failures?: unknown
+  } | null | undefined
+  if (c === null || c === undefined) return null
+  const provider = typeof c.default?.provider === 'string' ? c.default.provider : ''
+  const routableProviders = Array.isArray(c.routableProviders) ? c.routableProviders : []
+  return {
+    current: c.default ?? null,
+    routable: routableProviders.includes(provider),
+    groups: c.groups ?? [],
+    failures: c.failures ?? [],
   }
 }
 
@@ -114,7 +203,8 @@ export const invokeRemote = async (
   if (target === undefined) {
     throw new Error(`gateway: method ${JSON.stringify(method)} is not migrated to the in-process adapter`)
   }
-  return invoker.invoke({ namespace: target.namespace, method: target.method, args: argsFor(method, payload), signal })
+  const value = await invoker.invoke({ namespace: target.namespace, method: target.method, args: argsFor(method, payload), signal })
+  return method === 'session.models' ? translateModelCatalog(value) : value
 }
 
 /**

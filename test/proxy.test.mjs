@@ -4,7 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { createServer } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed } from '../lib/proxy.js'
-import { argsFor, isMigrated, invokeRemote, readHistory, REMOTE_METHODS } from '../lib/adapter.js'
+import { argsFor, isMigrated, invokeRemote, readHistory, REMOTE_METHODS, translateModelCatalog } from '../lib/adapter.js'
 import plugin from '../lib/index.js'
 
 // ---- pure helpers ----
@@ -53,6 +53,43 @@ test('adapter: host.describe is synthesized (0.1.2 has no such Remote)', async (
   const value = await invokeRemote(invoker, 'host.describe', {})
   assert.deepEqual(value, { version: '0.0.1' }, 'the old contract constant (DSH-FACTS §6)')
   assert.equal(called, false, 'synthesis must not touch the dispatcher')
+})
+
+test('adapter: 补映射——rename/fork/updateQueue/attachment/models/selectModel 全坐标（老契约 0.1.1 sessions.d.ts 实证）', () => {
+  for (const m of ['session.rename', 'session.fork', 'session.updateQueue', 'session.attachment', 'session.models', 'session.selectModel']) {
+    assert.equal(isMigrated(m), true, m + ' must be migrated')
+  }
+  assert.deepEqual(REMOTE_METHODS['session.rename'], { namespace: 'session', method: 'rename' })
+  assert.deepEqual(REMOTE_METHODS['session.models'], { namespace: 'session', method: 'modelCatalog' })
+  assert.deepEqual(argsFor('session.rename', { sessionId: 's1', title: 't' }), { request: { sessionId: 's1', title: 't' } })
+  assert.deepEqual(argsFor('session.rename', { sessionId: null, title: null }), { request: {} }, 'nulls dropped (strict codec)')
+  assert.deepEqual(argsFor('session.fork', { sessionId: 's1', atSeq: 3 }), { request: { sessionId: 's1', atSeq: 3 } })
+  assert.deepEqual(argsFor('session.fork', { sessionId: 's1', atSeq: null }), { request: { sessionId: 's1' } })
+  assert.deepEqual(argsFor('session.updateQueue', { sessionId: 's1', itemId: 'm1', action: { kind: 'remove' } }), {
+    request: { sessionId: 's1', itemId: 'm1', action: { kind: 'remove' } },
+  }, 'QueueAction 词汇两端一致，原样透传')
+  assert.deepEqual(argsFor('session.attachment', { sessionId: 's1', attachmentId: 'a1' }), { request: { sessionId: 's1', attachmentId: 'a1' } })
+  assert.deepEqual(argsFor('session.selectModel', { sessionId: 's1', provider: 'p', model: 'm', reasoningEffort: 'max' }), {
+    request: { sessionId: 's1', provider: 'p', model: 'm', reasoningEffort: 'max' },
+  })
+  assert.deepEqual(argsFor('session.models', { sessionId: 's1' }), {}, 'modelCatalog() 无 request 参数，多传 args 会被 strict codec 拒')
+})
+
+test('adapter: modelCatalog → 老 SessionModels 翻译（routable 语义对齐）', () => {
+  assert.deepEqual(translateModelCatalog({
+    default: { provider: 'p1', model: 'm1' },
+    routableProviders: ['p1', 'p2'],
+    groups: [{ id: 'p1', name: 'P1', models: [{ id: 'm1', name: 'M1' }] }],
+    failures: [{ id: 'p2', name: 'P2', message: 'down' }],
+  }), {
+    current: { provider: 'p1', model: 'm1' },
+    routable: true,
+    groups: [{ id: 'p1', name: 'P1', models: [{ id: 'm1', name: 'M1' }] }],
+    failures: [{ id: 'p2', name: 'P2', message: 'down' }],
+  })
+  const unroutable = translateModelCatalog({ default: { provider: 'p9' }, routableProviders: [] })
+  assert.equal(unroutable.routable, false, '当前 provider 不在 routableProviders = 不可路由')
+  assert.equal(translateModelCatalog(null), null)
 })
 
 test('adapter: session.create maps to session/create with request-named args', async () => {
@@ -307,11 +344,13 @@ test('proxy serves a migrated unary call in-process with the frozen envelope', a
 
 test('proxy reports unmigrated methods honestly (501) instead of touching the dead loopback', async () => {
   const upstream = await startUpstream()
-  const { web, fiber } = await boot({ apiKeys: ['k1'] }, upstream)
+  // 白名单方法现已全部迁移：注入一个「白名单里有但没映射」的方法来测
+  // 诚实 501 分支（防御未来新增白名单条目漏映射）。
+  const { web, fiber } = await boot({ apiKeys: ['k1'], proxyWhitelist: [...DEFAULT_PROXY_WHITELIST, 'session.unmigrated-probe'] }, upstream)
   try {
-    const res = await call(web, 'POST', '/api-gw/v1/proxy/session.rename', {
+    const res = await call(web, 'POST', '/api-gw/v1/proxy/session.unmigrated-probe', {
       headers: { 'x-api-key': 'k1' },
-      body: Buffer.from('{"type":"client-request","rpcId":"q1","method":"session.rename","payload":{}}'),
+      body: Buffer.from('{"type":"client-request","rpcId":"q1","method":"session.unmigrated-probe","payload":{}}'),
     })
     assert.equal(res.statusCode, 501)
     assert.equal(JSON.parse(res.body).error, 'method_not_migrated')

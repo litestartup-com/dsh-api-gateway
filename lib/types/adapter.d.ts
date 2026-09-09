@@ -42,6 +42,16 @@ export declare const isMigrated: (method: string) => boolean;
  * 参数名就是 `_request`，且 `cursor?: string` 可选项不能带 null（strict codec）。
  */
 export declare const argsFor: (method: string, payload: unknown) => Record<string, unknown>;
+/**
+ * 0.1.2 `session/modelCatalog` 返回值 → 老契约 `SessionModels`
+ * （两端口径都来自 dsh 类型实证：0.1.1 dsh-host-apiproxy sessions.d.ts 的
+ * SessionModels vs 0.1.2 session-controller types.ts 的 ModelCatalog）：
+ * - `current` ← `default`（老契约的「会话下一步模型选择」）
+ * - `routable` ← `routableProviders` 包含 `default.provider`（老契约语义 =
+ *   当前 provider 是否有 adapter 在服务）
+ * - `groups` / `failures` 字段形状两端一致，原样透传。
+ */
+export declare const translateModelCatalog: (catalog: unknown) => unknown;
 /** 一次直调：返回业务 value；抛错时由调用方翻译成 server-response 错误信封。 */
 export declare const invokeRemote: (invoker: GatewayInvoker, method: string, payload: unknown, signal?: AbortSignal) => Promise<unknown>;
 /**
