@@ -292,13 +292,53 @@ test('proxy reports unmigrated methods honestly (501) instead of touching the de
   const upstream = await startUpstream()
   const { web, fiber } = await boot({ apiKeys: ['k1'] }, upstream)
   try {
-    const res = await call(web, 'POST', '/api-gw/v1/proxy/respond', {
+    const res = await call(web, 'POST', '/api-gw/v1/proxy/session.rename', {
       headers: { 'x-api-key': 'k1' },
-      body: Buffer.from('{"type":"client-request","rpcId":"q1","method":"respond","payload":{}}'),
+      body: Buffer.from('{"type":"client-request","rpcId":"q1","method":"session.rename","payload":{}}'),
     })
     assert.equal(res.statusCode, 501)
     assert.equal(JSON.parse(res.body).error, 'method_not_migrated')
     assert.equal(upstream.captured.length, 0)
+  } finally {
+    await fiber.dispose()
+    await upstream.close()
+  }
+})
+
+test('respond route: old apiproxy receipts on both paths, auth first, never touching the HTTP upstream', async () => {
+  const upstream = await startUpstream()
+  const { web, fiber } = await boot({ apiKeys: ['k1'] }, upstream)
+  try {
+    // Auth gates the pending table before anything else.
+    const anon = await call(web, 'POST', '/api-gw/v1/respond', { body: Buffer.from('{}') })
+    assert.equal(anon.statusCode, 401)
+
+    // A non-JSON body is a carrier error, like the old apiproxy.
+    const bad = await call(web, 'POST', '/api-gw/v1/respond', {
+      headers: { 'x-api-key': 'k1' },
+      body: Buffer.from('{oops'),
+    })
+    assert.equal(bad.statusCode, 400)
+    assert.equal(JSON.parse(bad.body).error, 'bad_json')
+
+    // A non-client-response envelope is a bad response receipt (HTTP 200).
+    const wrong = await call(web, 'POST', '/api-gw/v1/respond', {
+      headers: { 'x-api-key': 'k1' },
+      body: Buffer.from('{"type":"client-request","rpcId":"q1"}'),
+    })
+    assert.equal(wrong.statusCode, 200)
+    assert.deepEqual(JSON.parse(wrong.body), { accepted: false, reason: 'bad-response' })
+
+    // No pending entry → not-pending receipt, on both paths (manager base+method form and legacy).
+    for (const path of ['/api-gw/v1/respond', '/api-gw/v1/proxy/respond']) {
+      const res = await call(web, 'POST', path, {
+        headers: { 'x-api-key': 'k1' },
+        body: Buffer.from('{"type":"client-response","rpcId":"apigw-nope","result":{"ok":true,"value":{}}}'),
+      })
+      assert.equal(res.statusCode, 200)
+      assert.deepEqual(JSON.parse(res.body), { accepted: false, reason: 'not-pending' })
+    }
+    assert.equal(upstream.captured.length, 0, 'respond never touches the HTTP upstream')
   } finally {
     await fiber.dispose()
     await upstream.close()

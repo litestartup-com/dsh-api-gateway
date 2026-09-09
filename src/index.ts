@@ -5,9 +5,10 @@
  * that lets an external client (the manager) reach the harness's own /api
  * surface (dsh-client-connection + dsh-host-apiproxy) from another machine:
  *
- *   POST {prefix}/proxy/<method>  ->  POST <proxyTarget>/<method>   (unary passthrough)
- *   POST {prefix}/proxy/respond   ->  POST <proxyTarget>/respond    (answers)
- *   GET  {prefix}/events.mux      ->  WS <proxyTarget>/events.mux   (downlink-only pipe)
+ *   POST {prefix}/proxy/<method>  ->  in-process Remote call          (unary, migrated set)
+ *   POST {prefix}/proxy/respond   ->  pending-table answer            (answers)
+ *   POST {prefix}/respond         ->  same handler (manager's base+method form)
+ *   GET  {prefix}/events.mux      ->  WS broadcast (downlink only)
  *
  * Every proxied path requires an API key, and every method must be on the
  * whitelist — anything else is refused before touching the upstream. The
@@ -36,6 +37,7 @@ import { provisionDecision, resolveCorsOrigin, routeSegments } from './http.js'
 import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed } from './proxy.js'
 import { invokeRemote, isMigrated, readHistory, type GatewayInvoker, type GatewayStreamer } from './adapter.js'
 import { FollowRegistry } from './streams.js'
+import { Answerer } from './answerer.js'
 import { isRemoteSandboxMode, REMOTE_SANDBOX_MODES } from './sandbox-mode.js'
 // 加载 ctx.typertGateway 的 Context 模块增补（0.1.2 内置 Remote 分发器）。
 import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway/types'
@@ -319,12 +321,42 @@ export default {
     }
 
     /**
+     * respond 桥路由（Phase 3b）。manager 按「统一 base + 方法」假设拼
+     * `${base}/respond`（rpc/mux/respond 三个推导同源），老文档面则是
+     * `/proxy/respond`——两条路径同一处理函数（mux 双路径同款先例）。
+     *
+     * 回执契约 = 老 apiproxy 的 { accepted, reason? }：manager respond.ts
+     * 只认 accepted === true，HTTP 恒 200。settle 命中即回填挂起项——
+     * 含 decline（not-ok + 'cancelled'）：老契约里也算认领成功。
+     */
+    const dispatchRespond = async (req: IncomingMessage, res: ServerResponse) => {
+      if (!requireAuth(req, res)) return
+      const raw = await readBodyRaw(req)
+      let envelope: {
+        type?: unknown
+        rpcId?: unknown
+        result?: { ok?: unknown; value?: unknown; error?: { code?: unknown; message?: unknown } }
+      } = {}
+      try {
+        envelope = JSON.parse(raw.toString('utf8') || '{}') as typeof envelope
+      } catch (error) {
+        return sendJson(res, 400, { error: 'bad_json', detail: errorDetail(error) })
+      }
+      if (envelope.type !== 'client-response') {
+        return sendJson(res, 200, { accepted: false, reason: 'bad-response' })
+      }
+      const { found } = answerer.settle(envelope)
+      return sendJson(res, 200, found ? { accepted: true } : { accepted: false, reason: 'not-pending' })
+    }
+
+    /**
      * 0.1.2 mux 桥：外层 WS 客户端集合 + 每会话 follow 流注册表。
      * 事件泵把增量 SessionEventEntry 与快照投影翻译成老 mux 帧广播
      * （mirror 0.1.1 全量广播语义；manager 本地按 sessionId 过滤）。
      */
     const outerSockets = new Set<import('ws').WebSocket>()
     let registry: FollowRegistry
+    let answerer: Answerer
     {
       const streamer = {
         stream: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
@@ -337,6 +369,16 @@ export default {
       }
       registry = new FollowRegistry(
         streamer,
+        (json) => {
+          for (const ws of outerSockets) {
+            if (ws.readyState === WebSocket.OPEN) {
+              try { ws.send(json) } catch { /* socket going away */ }
+            }
+          }
+        },
+        (line) => ctx.logger?.warn?.(line),
+      )
+      answerer = new Answerer(
         (json) => {
           for (const ws of outerSockets) {
             if (ws.readyState === WebSocket.OPEN) {
@@ -403,7 +445,8 @@ export default {
             { method: 'POST', path: cfg.prefix + '/admin/enable', auth: 'admin' },
             { method: 'POST', path: cfg.prefix + '/admin/rotate-key', auth: 'admin' },
             { method: 'POST', path: cfg.prefix + '/proxy/<method>', auth: true, note: 'apiproxy unary passthrough (whitelisted)' },
-            { method: 'POST', path: cfg.prefix + '/proxy/respond', auth: true, note: 'answer questions / approvals' },
+            { method: 'POST', path: cfg.prefix + '/respond', auth: true, note: 'answer questions / approvals (manager base+method form)' },
+            { method: 'POST', path: cfg.prefix + '/proxy/respond', auth: true, note: 'answer questions / approvals (legacy path)' },
             { method: 'POST', path: cfg.prefix + '/sessions/{id}/sandbox-mode', auth: true, note: 'per-session sandbox override (read-only | workspace-write)' },
             { method: 'GET', path: cfg.prefix + '/events.mux', auth: true, note: 'WebSocket, downlink only' },
           ],
@@ -488,6 +531,22 @@ export default {
         }
         ctx.logger?.info?.('[dsh-api-gw] API key rotated')
         return sendJson(res, 200, { apiKey: minted, persisted: settingsScope !== null })
+      }
+
+      // respond 桥：manager 拼 `${base}/respond`；/proxy/respond 是网关文档面
+      // 老路径——两条同处理。必须在通用 proxy 分支之前，否则 respond 会落到
+      // 白名单外的迁移检查上（501）。
+      const respondPath = (seg.length === 1 && seg[0] === 'respond')
+        || (seg.length === 2 && seg[0] === 'proxy' && seg[1] === 'respond')
+      if (respondPath && req.method === 'POST') {
+        try {
+          await dispatchRespond(req, res)
+        } catch (error) {
+          ctx.logger?.warn?.('[dsh-api-gw] respond failed: ' + String(error))
+          if (res.headersSent) { try { res.destroy() } catch { /* noop */ } ; return }
+          return sendJson(res, 500, { error: 'internal_error', detail: errorDetail(error) })
+        }
+        return
       }
 
       // The proxy surface: auth first, then whitelist (fail closed), then bytes.
@@ -599,6 +658,10 @@ export default {
 
     ctx.effect(() => {
       mountRoutes()
+      // respond 桥：挂在宿主进程内的问题/审批瀑布监听器上。DSP 会替
+      // answerer 处置（effect teardown 时调用返回的 disposer），不需要
+      // 单独记 dispose。
+      answerer.mount(ctx)
       return () => {
         if (disposeRoute !== null) { try { disposeRoute() } catch { /* noop */ } ; disposeRoute = null }
         while (disposeUpgrades.length > 0) { try { disposeUpgrades.pop()!() } catch { /* noop */ } }

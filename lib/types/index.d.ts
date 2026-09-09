@@ -5,9 +5,10 @@
  * that lets an external client (the manager) reach the harness's own /api
  * surface (dsh-client-connection + dsh-host-apiproxy) from another machine:
  *
- *   POST {prefix}/proxy/<method>  ->  POST <proxyTarget>/<method>   (unary passthrough)
- *   POST {prefix}/proxy/respond   ->  POST <proxyTarget>/respond    (answers)
- *   GET  {prefix}/events.mux      ->  WS <proxyTarget>/events.mux   (downlink-only pipe)
+ *   POST {prefix}/proxy/<method>  ->  in-process Remote call          (unary, migrated set)
+ *   POST {prefix}/proxy/respond   ->  pending-table answer            (answers)
+ *   POST {prefix}/respond         ->  same handler (manager's base+method form)
+ *   GET  {prefix}/events.mux      ->  WS broadcast (downlink only)
  *
  * Every proxied path requires an API key, and every method must be on the
  * whitelist — anything else is refused before touching the upstream. The
