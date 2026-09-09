@@ -7,6 +7,8 @@
  * 校验与业务实现。对外信封（client-request / server-response）不变。
  */
 
+import { randomBytes } from 'node:crypto'
+
 export interface GatewayInvoker {
   invoke(request: InvokeRemoteRequest): Promise<unknown>
 }
@@ -23,6 +25,8 @@ export interface InvokeRemoteRequest {
 export const REMOTE_METHODS: Readonly<Record<string, { readonly namespace: string; readonly method: string }>> = {
   'session.list': { namespace: 'session', method: 'list' },
   'session.create': { namespace: 'session', method: 'create' },
+  'session.prompt': { namespace: 'session', method: 'prompt' },
+  'session.cancel': { namespace: 'session', method: 'cancel' },
 }
 
 /** 已迁移进 REMOTE_METHODS 的方法才能直调。 */
@@ -52,6 +56,26 @@ export const argsFor = (method: string, payload: unknown): Record<string, unknow
           ...(typeof p.workspaceId === 'string' ? { workspaceId: p.workspaceId } : {}),
         },
       }
+    }
+    case 'session.prompt': {
+      // 0.1.2 要求必填 requestId（客户端铸的身份，落在被接受的用户消息上）。
+      // 旧契约没有这个字段——由翻译员铸造，契约冻结的代价归网关扛。
+      const p = (payload ?? {}) as {
+        requestId?: unknown; sessionId?: unknown; mode?: unknown; content?: unknown; clientTimeZone?: unknown
+      }
+      return {
+        request: {
+          requestId: typeof p.requestId === 'string' ? p.requestId : `apigw-${randomBytes(16).toString('hex')}`,
+          ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}),
+          ...(p.mode === 'queue' || p.mode === 'steer' ? { mode: p.mode } : { mode: 'queue' }),
+          ...(Array.isArray(p.content) ? { content: p.content } : { content: [] }),
+          ...(typeof p.clientTimeZone === 'string' ? { clientTimeZone: p.clientTimeZone } : {}),
+        },
+      }
+    }
+    case 'session.cancel': {
+      const p = (payload ?? {}) as { sessionId?: unknown }
+      return { request: { ...(typeof p.sessionId === 'string' ? { sessionId: p.sessionId } : {}) } }
     }
     default:
       return {}

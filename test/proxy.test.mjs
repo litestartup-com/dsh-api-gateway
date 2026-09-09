@@ -63,6 +63,29 @@ test('adapter: session.create maps to session/create with request-named args', a
   assert.deepEqual(calls[0], { namespace: 'session', method: 'create', args: { request: { cwd: 'C:/ws' } }, signal: undefined })
 })
 
+test('adapter: session.prompt mints the required requestId and keeps the queue contract', async () => {
+  const calls = []
+  const invoker = { invoke: async (request) => { calls.push(request); return { accepted: true } } }
+  const value = await invokeRemote(invoker, 'session.prompt', { sessionId: 's1', mode: 'queue', content: [{ type: 'text', text: 'hi' }] })
+  assert.deepEqual(value, { accepted: true })
+  const args = calls[0].args.request
+  assert.match(args.requestId, /^apigw-[0-9a-f]{32}$/, 'gateway mints the 0.1.2-required requestId')
+  assert.equal(args.sessionId, 's1')
+  assert.equal(args.mode, 'queue')
+  assert.deepEqual(args.content, [{ type: 'text', text: 'hi' }])
+  // 旧契约无 requestId：两次调用必须铸两个不同 id（不重复）。
+  await invokeRemote(invoker, 'session.prompt', { sessionId: 's1' })
+  assert.notEqual(calls[1].args.request.requestId, calls[0].args.request.requestId)
+})
+
+test('adapter: session.cancel passes the sessionId through', async () => {
+  const calls = []
+  const invoker = { invoke: async (request) => { calls.push(request); return { accepted: true } } }
+  const value = await invokeRemote(invoker, 'session.cancel', { sessionId: 's1' })
+  assert.deepEqual(value, { accepted: true })
+  assert.deepEqual(calls[0], { namespace: 'session', method: 'cancel', args: { request: { sessionId: 's1' } }, signal: undefined })
+})
+
 // ---- integration: the plugin over a mock upstream ----
 
 const startUpstream = () => new Promise((resolve) => {
