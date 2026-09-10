@@ -714,14 +714,27 @@ export default {
       void (async () => {
         const gateway = ctx.get('typertGateway', true) as
           (TypertGateway & { wireStream?: { open?: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>> } }) | undefined
-        const connection = ctx.get('connection', true) as
-          { rpc?: { call?: (...args: unknown[]) => Promise<unknown> } } | undefined
+        // 宿主侧 connection 没有浏览器客户端的 rpc.call；进程内发 $events/result
+        // 走共享通道的 Fetch handler（与浏览器信封同形，gateway 拦截路由到
+        // dispatchRpc —— dsh-client-connection/src/rpc-host.ts 实证）。
+        const connection = ctx.get('connection', true) as {
+          createSharedFetchHandler?: (channel: '/api') => { fetch: (request: Request) => Promise<Response> }
+        } | undefined
         let mounted: (() => void) | null = null
-        if (gateway?.wireStream?.open !== undefined && connection?.rpc?.call !== undefined) {
+        if (gateway?.wireStream?.open !== undefined && connection?.createSharedFetchHandler !== undefined) {
+          const sharedFetch = connection.createSharedFetchHandler('/api')
           try {
             mounted = await answerer.mountRemote({
               openStream: (endpoint, payload, signal) => gateway.wireStream!.open!(endpoint, payload, signal),
-              sendResult: (args, signal) => connection.rpc!.call!('/api', '$events/result', { args }, signal),
+              sendResult: async (args, signal) => {
+                const response = await sharedFetch.fetch(new Request('http://ohdsh-internal/api/$events/result', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ rpcId: `apigw-${randomBytes(8).toString('hex')}`, method: '$events/result', payload: { args } }),
+                  signal,
+                }))
+                if (!response.ok) throw new Error(`$events/result: HTTP ${response.status}`)
+              },
               onFrame: (kind) => { answererStats.frames += 1; if (kind === 'waterfall') answererStats.waterfalls += 1 },
             })
             answererStats.mode = 'remote'
@@ -731,7 +744,7 @@ export default {
             ctx.logger?.warn?.('[ohdsh-api-facade] remote event stream unavailable (' + answererStats.error + ') — falling back to in-host waterfall listeners')
           }
         } else {
-          answererStats.error = gateway?.wireStream?.open === undefined ? 'typertGateway.wireStream.open missing' : 'connection.rpc.call missing'
+          answererStats.error = gateway?.wireStream?.open === undefined ? 'typertGateway.wireStream.open missing' : 'connection.createSharedFetchHandler missing'
         }
         if (mounted === null) {
           answererStats.mode = 'fallback'
