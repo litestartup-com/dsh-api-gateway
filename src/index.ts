@@ -381,7 +381,7 @@ export default {
     let answerer: Answerer
     let controlBridge: ControlBridge
     /** 应答器挂载状态诊断（/health 与 GET / 可见）：mode remote|fallback|none。 */
-    const answererStats = { mode: 'none', frames: 0, waterfalls: 0, error: '' }
+    const answererStats = { mode: 'none', frames: 0, waterfalls: 0, error: '', broadcasts: 0, waterfallEvents: [] as string[] }
     /** 兜底 ctx.on 监听器的卸载器；远程路径就绪后替换。 */
     let disposeFallback: (() => void) | null = null
     {
@@ -407,6 +407,7 @@ export default {
       )
       answerer = new Answerer(
         (json) => {
+          answererStats.broadcasts += 1
           for (const ws of outerSockets) {
             if (ws.readyState === WebSocket.OPEN) {
               try { ws.send(json) } catch { /* socket going away */ }
@@ -477,6 +478,8 @@ export default {
           answererWaterfalls: answererStats.waterfalls,
           answererPending: answerer.pendingCount(),
           answererError: answererStats.error,
+          answererBroadcasts: answererStats.broadcasts,
+          answererWaterfallEvents: answererStats.waterfallEvents,
         })
       }
       if (!cfg.enabled) return sendJson(res, 503, { error: 'service_disabled' })
@@ -767,7 +770,13 @@ export default {
                 }))
                 if (!response.ok) throw new Error(`$events/result: HTTP ${response.status}`)
               },
-              onFrame: (kind) => { answererStats.frames += 1; if (kind === 'waterfall') answererStats.waterfalls += 1 },
+              onFrame: (kind, event) => {
+                answererStats.frames += 1
+                if (kind === 'waterfall') {
+                  answererStats.waterfalls += 1
+                  if (typeof event === 'string' && answererStats.waterfallEvents.length < 8) answererStats.waterfallEvents.push(event)
+                }
+              },
             })
             if (disposed) {
               mounted()
