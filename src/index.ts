@@ -50,6 +50,15 @@ const VERSION: string = (() => {
   catch { return '0.0.0' }
 })()
 
+/** 诊断用：概括一个服务的类名与原型方法，供 /health 的 answererError 暴露。 */
+const describeService = (value: unknown): string => {
+  if (value === undefined || value === null) return 'undefined'
+  const proto = Object.getPrototypeOf(value)
+  const names = Object.getOwnPropertyNames(proto ?? {}).filter((n) => n !== 'constructor')
+  const ctor = (proto?.constructor as { name?: string } | undefined)?.name ?? '?'
+  return `${ctor} [${names.join(',')}]`
+}
+
 export interface Config {
   /** Route prefix. Defaults to /api-gw/v1. */
   prefix: string
@@ -373,6 +382,8 @@ export default {
     let controlBridge: ControlBridge
     /** 应答器挂载状态诊断（/health 与 GET / 可见）：mode remote|fallback|none。 */
     const answererStats = { mode: 'none', frames: 0, waterfalls: 0, error: '' }
+    /** 兜底 ctx.on 监听器的卸载器；远程路径就绪后替换。 */
+    let disposeFallback: (() => void) | null = null
     {
       const streamer = {
         stream: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
@@ -703,28 +714,49 @@ export default {
 
     ctx.effect(() => {
       mountRoutes()
-      // respond 桥（方案 A）：进程内远程事件客户端应答器优先（browser 同款流程，
-      // 无监听顺序依赖）；装不上（宿主无 typertGateway.wireStream / connection /
-      // 转发事件源）时回退 ctx.on 瀑布监听器。DSP 会替 answerer 处置
-      // （effect teardown 时调用返回的 disposer），不需要单独记 dispose。
-      // 挂载是异步的（$events 流的打开是 Promise）：在同步 effect 里发起，
-      // 用 disposed 标记处理卸载竞态。
-      let disposeAnswerer: (() => void) | null = null
-      let disposed = false
-      void (async () => {
-        const gateway = ctx.get('typertGateway', true) as
-          (TypertGateway & { wireStream?: { open?: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>> } }) | undefined
-        // 宿主侧 connection 没有浏览器客户端的 rpc.call；进程内发 $events/result
-        // 走共享通道的 Fetch handler（与浏览器信封同形，gateway 拦截路由到
-        // dispatchRpc —— dsh-client-connection/src/rpc-host.ts 实证）。
-        const connection = ctx.get('connection', true) as {
-          createSharedFetchHandler?: (channel: '/api') => { fetch: (request: Request) => Promise<Response> }
-        } | undefined
-        let mounted: (() => void) | null = null
-        if (gateway?.wireStream?.open !== undefined && connection?.createSharedFetchHandler !== undefined) {
+      // 兜底：ctx.on 瀑布监听器（connection 注入不到或 $events 打不开的部署）。
+      // 挂上即生效；远程路径就绪后由下方 inject fiber 替换。
+      answererStats.mode = 'fallback'
+      disposeFallback = answerer.mount(ctx)
+      // live projections 桥：一个宿主级 control 流，随插件生命周期开关。
+      controlBridge.start()
+      return () => {
+        controlBridge.dispose()
+        if (disposeFallback !== null) { disposeFallback(); disposeFallback = null }
+        if (disposeRoute !== null) { try { disposeRoute() } catch { /* noop */ } ; disposeRoute = null }
+        while (disposeUpgrades.length > 0) { try { disposeUpgrades.pop()!() } catch { /* noop */ } }
+        // Terminated rather than closed politely: an unload must not wait on
+        // clients that keep their sockets open.
+        for (const client of wss.clients) client.terminate()
+        wss.close()
+      }
+    })
+
+    // 方案 A：connection 服务可能晚于 facade 注册（ctx.get optional 不等待，
+    // 注入会等——gateway 同款拿法）。就绪后开 $events 客户端流替换兜底。
+    ctx.inject(['connection'] as never, (connectionCtx) => {
+      const cctx = connectionCtx as Context & {
+        connection?: { createSharedFetchHandler?: (channel: string) => { fetch: (request: Request) => Promise<Response> } }
+      }
+      cctx.effect(() => {
+        let disposeRemote: (() => void) | null = null
+        let disposed = false
+        void (async () => {
+          const gateway = ctx.get('typertGateway', true) as
+            (TypertGateway & { wireStream?: { open?: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>> } }) | undefined
+          // 宿主侧 connection 没有浏览器客户端的 rpc.call；进程内发 $events/result
+          // 走共享通道的 Fetch handler（与浏览器信封同形，gateway 拦截路由到
+          // dispatchRpc —— dsh-client-connection/src/rpc-host.ts 实证）。
+          const connection = cctx.connection
+          if (gateway?.wireStream?.open === undefined || connection?.createSharedFetchHandler === undefined) {
+            answererStats.error = gateway?.wireStream?.open === undefined
+              ? `typertGateway.wireStream.open missing (${describeService(gateway)})`
+              : `connection carrier missing (${describeService(connection)})`
+            return
+          }
           const sharedFetch = connection.createSharedFetchHandler('/api')
           try {
-            mounted = await answerer.mountRemote({
+            const mounted = await answerer.mountRemote({
               openStream: (endpoint, payload, signal) => gateway.wireStream!.open!(endpoint, payload, signal),
               sendResult: async (args, signal) => {
                 const response = await sharedFetch.fetch(new Request('http://ohdsh-internal/api/$events/result', {
@@ -737,44 +769,24 @@ export default {
               },
               onFrame: (kind) => { answererStats.frames += 1; if (kind === 'waterfall') answererStats.waterfalls += 1 },
             })
-            answererStats.mode = 'remote'
-            ctx.logger?.info?.('[ohdsh-api-facade] answerer mounted via in-process remote event client ($events)')
+            if (disposed) {
+              mounted()
+            } else {
+              disposeRemote = mounted
+              answererStats.mode = 'remote'
+              if (disposeFallback !== null) { disposeFallback(); disposeFallback = null }
+              ctx.logger?.info?.('[ohdsh-api-facade] answerer mounted via in-process remote event client ($events)')
+            }
           } catch (error) {
             answererStats.error = String((error as Error)?.message ?? error)
-            ctx.logger?.warn?.('[ohdsh-api-facade] remote event stream unavailable (' + answererStats.error + ') — falling back to in-host waterfall listeners')
+            ctx.logger?.warn?.('[ohdsh-api-facade] remote event stream unavailable (' + answererStats.error + ') — keeping in-host waterfall listeners')
           }
-        } else {
-          const describe = (value: unknown): string => {
-            if (value === undefined || value === null) return 'undefined'
-            const proto = Object.getPrototypeOf(value)
-            const names = Object.getOwnPropertyNames(proto ?? {}).filter((n) => n !== 'constructor')
-            const ctor = (proto?.constructor as { name?: string } | undefined)?.name ?? '?'
-            return `${ctor} [${names.join(',')}]`
-          }
-          answererStats.error = gateway?.wireStream?.open === undefined
-            ? `typertGateway.wireStream.open missing (${describe(gateway)})`
-            : `connection carrier missing (${describe(connection)})`
+        })()
+        return () => {
+          disposed = true
+          if (disposeRemote !== null) { disposeRemote(); disposeRemote = null }
         }
-        if (mounted === null) {
-          answererStats.mode = 'fallback'
-          mounted = answerer.mount(ctx)
-        }
-        if (disposed) mounted()
-        else disposeAnswerer = mounted
-      })()
-      // live projections 桥：一个宿主级 control 流，随插件生命周期开关。
-      controlBridge.start()
-      return () => {
-        disposed = true
-        controlBridge.dispose()
-        if (disposeAnswerer !== null) { try { disposeAnswerer() } catch { /* noop */ } ; disposeAnswerer = null }
-        if (disposeRoute !== null) { try { disposeRoute() } catch { /* noop */ } ; disposeRoute = null }
-        while (disposeUpgrades.length > 0) { try { disposeUpgrades.pop()!() } catch { /* noop */ } }
-        // Terminated rather than closed politely: an unload must not wait on
-        // clients that keep their sockets open.
-        for (const client of wss.clients) client.terminate()
-        wss.close()
-      }
+      })
     })
 
     // Settings integration: expose the gateway Config as a live settings
