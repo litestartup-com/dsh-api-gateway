@@ -773,7 +773,7 @@ export default {
                 const response = await sharedFetch.fetch(new Request('http://ohdsh-internal/api/$events/result', {
                   method: 'POST',
                   headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ rpcId: `apigw-${randomBytes(8).toString('hex')}`, method: '$events/result', payload: { args } }),
+                  body: JSON.stringify({ type: 'client-request', rpcId: `apigw-${randomBytes(8).toString('hex')}`, method: '$events/result', payload: { args } }),
                   signal,
                 }))
                 if (!response.ok) throw new Error(`$events/result: HTTP ${response.status}`)
