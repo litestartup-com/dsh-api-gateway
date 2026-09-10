@@ -381,7 +381,10 @@ export default {
     let answerer: Answerer
     let controlBridge: ControlBridge
     /** 应答器挂载状态诊断（/health 与 GET / 可见）：mode remote|fallback|none。 */
-    const answererStats = { mode: 'none', frames: 0, waterfalls: 0, error: '', broadcasts: 0, waterfallEvents: [] as string[] }
+    const answererStats = {
+      mode: 'none', frames: 0, waterfalls: 0, error: '', broadcasts: 0,
+      waterfallEvents: [] as string[], lastBroadcastAt: 0, lastBroadcastSockets: 0,
+    }
     /** 兜底 ctx.on 监听器的卸载器；远程路径就绪后替换。 */
     let disposeFallback: (() => void) | null = null
     {
@@ -408,6 +411,8 @@ export default {
       answerer = new Answerer(
         (json) => {
           answererStats.broadcasts += 1
+          answererStats.lastBroadcastAt = Date.now()
+          answererStats.lastBroadcastSockets = outerSockets.size
           for (const ws of outerSockets) {
             if (ws.readyState === WebSocket.OPEN) {
               try { ws.send(json) } catch { /* socket going away */ }
@@ -477,9 +482,12 @@ export default {
           answererFrames: answererStats.frames,
           answererWaterfalls: answererStats.waterfalls,
           answererPending: answerer.pendingCount(),
+          answererPendingIds: answerer.pendingIds(),
           answererError: answererStats.error,
           answererBroadcasts: answererStats.broadcasts,
           answererWaterfallEvents: answererStats.waterfallEvents,
+          answererLastBroadcastAt: answererStats.lastBroadcastAt,
+          answererLastBroadcastSockets: answererStats.lastBroadcastSockets,
         })
       }
       if (!cfg.enabled) return sendJson(res, 503, { error: 'service_disabled' })

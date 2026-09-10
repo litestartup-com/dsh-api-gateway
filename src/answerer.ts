@@ -390,4 +390,9 @@ export class Answerer {
   pendingCount(): number {
     return this.pending.size
   }
+
+  /** 挂起项的 respond rpcId 清单（诊断/探针用）。 */
+  pendingIds(): string[] {
+    return [...this.pending.keys()]
+  }
 }

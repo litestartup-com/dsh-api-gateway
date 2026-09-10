@@ -59,4 +59,6 @@ export declare class Answerer {
         found: boolean;
     };
     pendingCount(): number;
+    /** 挂起项的 respond rpcId 清单（诊断/探针用）。 */
+    pendingIds(): string[];
 }
