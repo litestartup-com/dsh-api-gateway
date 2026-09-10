@@ -744,7 +744,16 @@ export default {
             ctx.logger?.warn?.('[ohdsh-api-facade] remote event stream unavailable (' + answererStats.error + ') — falling back to in-host waterfall listeners')
           }
         } else {
-          answererStats.error = gateway?.wireStream?.open === undefined ? 'typertGateway.wireStream.open missing' : 'connection.createSharedFetchHandler missing'
+          const describe = (value: unknown): string => {
+            if (value === undefined || value === null) return 'undefined'
+            const proto = Object.getPrototypeOf(value)
+            const names = Object.getOwnPropertyNames(proto ?? {}).filter((n) => n !== 'constructor')
+            const ctor = (proto?.constructor as { name?: string } | undefined)?.name ?? '?'
+            return `${ctor} [${names.join(',')}]`
+          }
+          answererStats.error = gateway?.wireStream?.open === undefined
+            ? `typertGateway.wireStream.open missing (${describe(gateway)})`
+            : `connection carrier missing (${describe(connection)})`
         }
         if (mounted === null) {
           answererStats.mode = 'fallback'
