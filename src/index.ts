@@ -36,7 +36,7 @@ import z from '@deepseek-ai/schemastery'
 import { WebSocket, WebSocketServer } from 'ws'
 import { provisionDecision, resolveCorsOrigin, routeSegments } from './http.js'
 import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed } from './proxy.js'
-import { invokeRemote, isMigrated, readHistory, type GatewayInvoker, type GatewayStreamer } from './adapter.js'
+import { HOST_DESCRIBE, invokeRemote, isMigrated, readHistory, type GatewayInvoker, type GatewayStreamer } from './adapter.js'
 import { FollowRegistry } from './streams.js'
 import { ControlBridge } from './streams.js'
 import { Answerer } from './answerer.js'
@@ -478,6 +478,7 @@ export default {
           enabled: cfg.enabled,
           upstream,
           apiKeySet: acceptedKeys().length > 0,
+          dshVersion: HOST_DESCRIBE.version,
           answerer: answererStats.mode,
           answererFrames: answererStats.frames,
           answererWaterfalls: answererStats.waterfalls,
