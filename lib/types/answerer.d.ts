@@ -13,6 +13,8 @@ import type { Context } from '@deepseek-ai/cordis';
 export interface RemoteEventCarrier {
     openStream: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>>;
     sendResult: (args: unknown, signal: AbortSignal) => Promise<unknown>;
+    /** 每收到一帧回调（诊断计数用）。 */
+    onFrame?: (kind: string) => void;
 }
 /** manager 不回应的最长期限（超时让位给链上其它应答器，如浏览器 UI）。 */
 export declare const ANSWER_TIMEOUT_MS: number;

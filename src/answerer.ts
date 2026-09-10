@@ -60,6 +60,8 @@ interface PendingEntry {
 export interface RemoteEventCarrier {
   openStream: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>>
   sendResult: (args: unknown, signal: AbortSignal) => Promise<unknown>
+  /** 每收到一帧回调（诊断计数用）。 */
+  onFrame?: (kind: string) => void
 }
 
 const REMOTE_EVENT_STREAM_ENDPOINT = '$events'
@@ -219,6 +221,7 @@ export class Answerer {
         if (signal.aborted) return
         if (value === null || typeof value !== 'object') continue
         const frame = value as Record<string, unknown>
+        carrier.onFrame?.(typeof frame.type === 'string' ? frame.type : 'unknown')
         if (clientId === null) {
           if (frame.type === 'ready' && typeof frame.clientId === 'string') {
             clientId = frame.clientId

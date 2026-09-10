@@ -371,6 +371,8 @@ export default {
     let registry: FollowRegistry
     let answerer: Answerer
     let controlBridge: ControlBridge
+    /** 应答器挂载状态诊断（/health 与 GET / 可见）：mode remote|fallback|none。 */
+    const answererStats = { mode: 'none', frames: 0, waterfalls: 0 }
     {
       const streamer = {
         stream: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
@@ -459,6 +461,10 @@ export default {
           enabled: cfg.enabled,
           upstream,
           apiKeySet: acceptedKeys().length > 0,
+          answerer: answererStats.mode,
+          answererFrames: answererStats.frames,
+          answererWaterfalls: answererStats.waterfalls,
+          answererPending: answerer.pendingCount(),
         })
       }
       if (!cfg.enabled) return sendJson(res, 503, { error: 'service_disabled' })
@@ -466,6 +472,10 @@ export default {
       if (seg.length === 0 && req.method === 'GET') {
         return sendJson(res, 200, {
           service: 'ohdsh-api-facade', version: VERSION,
+          answerer: answererStats.mode,
+          answererFrames: answererStats.frames,
+          answererWaterfalls: answererStats.waterfalls,
+          answererPending: answerer.pendingCount(),
           endpoints: [
             { method: 'GET', path: cfg.prefix + '/health', auth: false },
             { method: 'POST', path: cfg.prefix + '/key', auth: 'first call only' },
@@ -690,34 +700,48 @@ export default {
       }
     }
 
-    ctx.effect(async () => {
+    ctx.effect(() => {
       mountRoutes()
       // respond 桥（方案 A）：进程内远程事件客户端应答器优先（browser 同款流程，
       // 无监听顺序依赖）；装不上（宿主无 typertGateway.wireStream / connection /
       // 转发事件源）时回退 ctx.on 瀑布监听器。DSP 会替 answerer 处置
       // （effect teardown 时调用返回的 disposer），不需要单独记 dispose。
+      // 挂载是异步的（$events 流的打开是 Promise）：在同步 effect 里发起，
+      // 用 disposed 标记处理卸载竞态。
       let disposeAnswerer: (() => void) | null = null
-      const gateway = ctx.get('typertGateway', true) as
-        (TypertGateway & { wireStream?: { open?: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>> } }) | undefined
-      const connection = ctx.get('connection', true) as
-        { rpc?: { call?: (...args: unknown[]) => Promise<unknown> } } | undefined
-      if (gateway?.wireStream?.open !== undefined && connection?.rpc?.call !== undefined) {
-        try {
-          disposeAnswerer = await answerer.mountRemote({
-            openStream: (endpoint, payload, signal) => gateway.wireStream!.open!(endpoint, payload, signal),
-            sendResult: (args, signal) => connection.rpc!.call!('/api', '$events/result', { args }, signal),
-          })
-          ctx.logger?.info?.('[ohdsh-api-facade] answerer mounted via in-process remote event client ($events)')
-        } catch (error) {
-          ctx.logger?.warn?.('[ohdsh-api-facade] remote event stream unavailable (' + String((error as Error)?.message ?? error) + ') — falling back to in-host waterfall listeners')
+      let disposed = false
+      void (async () => {
+        const gateway = ctx.get('typertGateway', true) as
+          (TypertGateway & { wireStream?: { open?: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>> } }) | undefined
+        const connection = ctx.get('connection', true) as
+          { rpc?: { call?: (...args: unknown[]) => Promise<unknown> } } | undefined
+        let mounted: (() => void) | null = null
+        if (gateway?.wireStream?.open !== undefined && connection?.rpc?.call !== undefined) {
+          try {
+            mounted = await answerer.mountRemote({
+              openStream: (endpoint, payload, signal) => gateway.wireStream!.open!(endpoint, payload, signal),
+              sendResult: (args, signal) => connection.rpc!.call!('/api', '$events/result', { args }, signal),
+              onFrame: (kind) => { answererStats.frames += 1; if (kind === 'waterfall') answererStats.waterfalls += 1 },
+            })
+            answererStats.mode = 'remote'
+            ctx.logger?.info?.('[ohdsh-api-facade] answerer mounted via in-process remote event client ($events)')
+          } catch (error) {
+            ctx.logger?.warn?.('[ohdsh-api-facade] remote event stream unavailable (' + String((error as Error)?.message ?? error) + ') — falling back to in-host waterfall listeners')
+          }
         }
-      }
-      if (disposeAnswerer === null) disposeAnswerer = answerer.mount(ctx)
+        if (mounted === null) {
+          answererStats.mode = 'fallback'
+          mounted = answerer.mount(ctx)
+        }
+        if (disposed) mounted()
+        else disposeAnswerer = mounted
+      })()
       // live projections 桥：一个宿主级 control 流，随插件生命周期开关。
       controlBridge.start()
       return () => {
+        disposed = true
         controlBridge.dispose()
-        if (disposeAnswerer !== null) disposeAnswerer()
+        if (disposeAnswerer !== null) { try { disposeAnswerer() } catch { /* noop */ } ; disposeAnswerer = null }
         if (disposeRoute !== null) { try { disposeRoute() } catch { /* noop */ } ; disposeRoute = null }
         while (disposeUpgrades.length > 0) { try { disposeUpgrades.pop()!() } catch { /* noop */ } }
         // Terminated rather than closed politely: an unload must not wait on
