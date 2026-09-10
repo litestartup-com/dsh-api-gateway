@@ -372,7 +372,7 @@ export default {
     let answerer: Answerer
     let controlBridge: ControlBridge
     /** 应答器挂载状态诊断（/health 与 GET / 可见）：mode remote|fallback|none。 */
-    const answererStats = { mode: 'none', frames: 0, waterfalls: 0 }
+    const answererStats = { mode: 'none', frames: 0, waterfalls: 0, error: '' }
     {
       const streamer = {
         stream: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
@@ -465,6 +465,7 @@ export default {
           answererFrames: answererStats.frames,
           answererWaterfalls: answererStats.waterfalls,
           answererPending: answerer.pendingCount(),
+          answererError: answererStats.error,
         })
       }
       if (!cfg.enabled) return sendJson(res, 503, { error: 'service_disabled' })
@@ -726,8 +727,11 @@ export default {
             answererStats.mode = 'remote'
             ctx.logger?.info?.('[ohdsh-api-facade] answerer mounted via in-process remote event client ($events)')
           } catch (error) {
-            ctx.logger?.warn?.('[ohdsh-api-facade] remote event stream unavailable (' + String((error as Error)?.message ?? error) + ') — falling back to in-host waterfall listeners')
+            answererStats.error = String((error as Error)?.message ?? error)
+            ctx.logger?.warn?.('[ohdsh-api-facade] remote event stream unavailable (' + answererStats.error + ') — falling back to in-host waterfall listeners')
           }
+        } else {
+          answererStats.error = gateway?.wireStream?.open === undefined ? 'typertGateway.wireStream.open missing' : 'connection.rpc.call missing'
         }
         if (mounted === null) {
           answererStats.mode = 'fallback'
