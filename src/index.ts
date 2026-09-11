@@ -314,6 +314,16 @@ export default {
       if (!isMigrated(method)) {
         return sendJson(res, 501, { error: 'method_not_migrated', hint: 'this method is not yet served in-process on the 0.1.2 host' })
       }
+      // host.describe 由 facade 合成：version = 宿主真实 DSH 版本，
+      // allowFullAccess = 本部署是否开锁 danger-full-access（manager 据此
+      // 决定 UI 是否放行第三档权限——2026-09-11 拍板「风险告知+用户决策」）。
+      if (method === 'host.describe') {
+        return sendJson(res, 200, {
+          type: 'server-response',
+          rpcId,
+          result: { ok: true, value: { version: HOST_DESCRIBE.version, allowFullAccess: cfg.allowFullAccess } },
+        })
+      }
       const gateway = ctx.get('typertGateway', true) as TypertGateway | undefined
       if (gateway === undefined) {
         return sendJson(res, 501, { error: 'service_unavailable', hint: 'host typertGateway is not available' })
@@ -479,6 +489,7 @@ export default {
           upstream,
           apiKeySet: acceptedKeys().length > 0,
           dshVersion: HOST_DESCRIBE.version,
+          allowFullAccess: cfg.allowFullAccess,
           answerer: answererStats.mode,
           answererFrames: answererStats.frames,
           answererWaterfalls: answererStats.waterfalls,

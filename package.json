@@ -1,6 +1,6 @@
 {
   "name": "ohdsh-api-facade",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Open-source plugin for DeepSeek Harness: an authenticated, fail-closed in-host facade that serves the harness session surface to remote clients over a frozen wire contract.",
   "license": "MIT",
   "type": "module",
