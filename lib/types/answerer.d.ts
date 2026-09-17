@@ -22,8 +22,20 @@ export declare class Answerer {
     private readonly broadcast;
     private readonly log;
     private readonly pending;
+    /**
+     * 卡片链(2026-09-17):挂起项的原广播载荷——manager 的恢复通道
+     * (`GET {prefix}/answerer/pending`) 按需取回;断线窗口/manager 重启后,
+     * 卡片帧只广播过一次,没有这份载荷就永远恢复不了。
+     */
+    private readonly pendingBroadcasts;
     private disposers;
     constructor(broadcast: (json: string) => void, log: (line: string) => void);
+    /** 挂起项的恢复载荷清单(诊断/恢复端点用;rpcId 与 payload 原样)。 */
+    pendingList(): Array<{
+        rpcId: string;
+        method: 'question/requested' | 'approval/requested';
+        payload: Record<string, unknown>;
+    }>;
     /** 挂载两个 waterfall 监听器；返回卸载器（fiber 销毁时调用）。 */
     mount(ctx: Context): () => void;
     private awaitAnswer;

@@ -74,12 +74,27 @@ const mintId = (): string => `apigw-${randomBytes(16).toString('hex')}`
 
 export class Answerer {
   private readonly pending = new Map<string, PendingEntry>()
+  /**
+   * 卡片链(2026-09-17):挂起项的原广播载荷——manager 的恢复通道
+   * (`GET {prefix}/answerer/pending`) 按需取回;断线窗口/manager 重启后,
+   * 卡片帧只广播过一次,没有这份载荷就永远恢复不了。
+   */
+  private readonly pendingBroadcasts = new Map<string, { method: 'question/requested' | 'approval/requested'; payload: Record<string, unknown> }>()
   private disposers: Array<() => void> = []
 
   constructor(
     private readonly broadcast: (json: string) => void,
     private readonly log: (line: string) => void,
   ) {}
+
+  /** 挂起项的恢复载荷清单(诊断/恢复端点用;rpcId 与 payload 原样)。 */
+  pendingList(): Array<{ rpcId: string; method: 'question/requested' | 'approval/requested'; payload: Record<string, unknown> }> {
+    const out: Array<{ rpcId: string; method: 'question/requested' | 'approval/requested'; payload: Record<string, unknown> }> = []
+    for (const [rpcId, entry] of this.pendingBroadcasts) {
+      out.push({ rpcId, ...entry })
+    }
+    return out
+  }
 
   /** 挂载两个 waterfall 监听器；返回卸载器（fiber 销毁时调用）。 */
   mount(ctx: Context): () => void {
@@ -89,11 +104,13 @@ export class Answerer {
     ): Promise<AskUserQuestionAnswer> => {
       const rpcId = mintId()
       const sessionId = request.agent?.id ?? ''
+      const payload: Record<string, unknown> = { type: 'question/requested', sessionId, questions: request.questions }
+      this.pendingBroadcasts.set(rpcId, { method: 'question/requested', payload })
       this.broadcast(JSON.stringify({
         type: 'server-request',
         rpcId,
         method: 'question/requested',
-        payload: { type: 'question/requested', sessionId, questions: request.questions },
+        payload,
       }))
       try {
         // respond 值 = { sessionId, answer: { answers: [...] } }；认领返回值 = { answers }。
@@ -118,18 +135,20 @@ export class Answerer {
       next: () => Promise<ApprovalOutcome>,
     ): Promise<ApprovalOutcome> => {
       const approvalId = mintId()
+      const payload: Record<string, unknown> = {
+        type: 'approval/requested',
+        sessionId: request.agent.id,
+        approvalId,
+        toolName: request.toolName,
+        callId: request.callId ?? null,
+        reason: request.reason ?? null,
+      }
+      this.pendingBroadcasts.set(approvalId, { method: 'approval/requested', payload })
       this.broadcast(JSON.stringify({
         type: 'server-request',
         rpcId: approvalId,
         method: 'approval/requested',
-        payload: {
-          type: 'approval/requested',
-          sessionId: request.agent.id,
-          approvalId,
-          toolName: request.toolName,
-          callId: request.callId ?? null,
-          reason: request.reason ?? null,
-        },
+        payload,
       }))
       try {
         // respond 值 = { sessionId, approvalId, outcome }；outcome 词汇直通。
@@ -159,11 +178,13 @@ export class Answerer {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
+        this.pendingBroadcasts.delete(id)
         reject(new Error('answer timeout'))
       }, ANSWER_TIMEOUT_MS)
       const onAbort = (): void => {
         clearTimeout(timer)
         this.pending.delete(id)
+        this.pendingBroadcasts.delete(id)
         reject(new Error('cancelled'))
       }
       signal?.addEventListener('abort', onAbort, { once: true })
@@ -172,12 +193,14 @@ export class Answerer {
           clearTimeout(timer)
           signal?.removeEventListener('abort', onAbort)
           this.pending.delete(id)
+          this.pendingBroadcasts.delete(id)
           resolve(value)
         },
         reject: (reason) => {
           clearTimeout(timer)
           signal?.removeEventListener('abort', onAbort)
           this.pending.delete(id)
+          this.pendingBroadcasts.delete(id)
           reject(reason)
         },
       }
@@ -271,15 +294,17 @@ export class Answerer {
     if (event === 'user-questions/request') {
       const rpcId = mintId()
       eventEntries.set(eventId, rpcId)
+      const payload: Record<string, unknown> = {
+        type: 'question/requested',
+        sessionId,
+        questions: Array.isArray(request.questions) ? request.questions : [],
+      }
+      this.pendingBroadcasts.set(rpcId, { method: 'question/requested', payload })
       this.broadcast(JSON.stringify({
         type: 'server-request',
         rpcId,
         method: 'question/requested',
-        payload: {
-          type: 'question/requested',
-          sessionId,
-          questions: Array.isArray(request.questions) ? request.questions : [],
-        },
+        payload,
       }))
       try {
         // respond 值 = { answer: { answers } }；认领值 = { answers }（与 ctx.on 路径同形）。
@@ -307,18 +332,20 @@ export class Answerer {
     if (event === 'approval/request') {
       const approvalId = mintId()
       eventEntries.set(eventId, approvalId)
+      const payload: Record<string, unknown> = {
+        type: 'approval/requested',
+        sessionId,
+        approvalId,
+        toolName: typeof request.toolName === 'string' ? request.toolName : '',
+        callId: typeof request.callId === 'string' ? request.callId : null,
+        reason: typeof request.reason === 'string' ? request.reason : null,
+      }
+      this.pendingBroadcasts.set(approvalId, { method: 'approval/requested', payload })
       this.broadcast(JSON.stringify({
         type: 'server-request',
         rpcId: approvalId,
         method: 'approval/requested',
-        payload: {
-          type: 'approval/requested',
-          sessionId,
-          approvalId,
-          toolName: typeof request.toolName === 'string' ? request.toolName : '',
-          callId: typeof request.callId === 'string' ? request.callId : null,
-          reason: typeof request.reason === 'string' ? request.reason : null,
-        },
+        payload,
       }))
       try {
         // respond 值 = { outcome }；认领值 = outcome 字符串（词汇直通）。
