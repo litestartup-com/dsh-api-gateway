@@ -20,6 +20,32 @@ This plugin runs inside the DSH process and calls the host domain services
 directly (typertGateway dispatcher, session streams, waterfalls), guarded by
 API-key auth and a deny-by-default whitelist.
 
+## Supported DSH versions
+
+The facade runs **inside** a DSH host, so its compatibility surface is the host
+version. The declared range lives in `package.json` `peerDependencies`
+(`^0.1.2-rc.1`, covering the 0.1.2–0.1.x line); the pairings below are the
+ones **verified end-to-end** — wire contract, question/approval card chains,
+and GUI token capture — not merely semver-declared:
+
+| DSH | Status | Evidence |
+| --- | --- | --- |
+| `0.1.2-rc.1` | ✅ verified | Full-chain smoke (`dsh-agent-manager/scripts/smoke-proxy-b.ts`, real model turn) |
+| `0.1.5-rc.2` | ✅ verified | Full-chain + question/approval card-chain smoke on the pinned commit `#b592b4f`; see the install note below |
+| `0.1.1-rc.2` | ⚠️ legacy | Wire contract frozen from this era; not the supported base |
+
+> **0.1.5 install note**: npm's strict peer resolution rejects the default
+> install (ERESOLVE) even though `^0.1.2-rc.1` covers 0.1.5 semantically —
+> compose 0.1.5 profiles with `npm install --legacy-peer-deps`. Consumers track
+> this in their version matrix (`dsh-agent-manager` `src/dsh-matrix.ts`,
+> `needsLegacyPeerDeps`).
+
+Consumers pin the facade **by commit**
+(`github:litestartup-com/dsh-api-gateway#<sha>`), so each DSH line is
+re-verified before a pin moves; verification records live in the private
+design library (`dsh-facts`). Newer DSH lines (e.g. `0.1.6-alpha.*`) are
+**not verified yet**.
+
 ## Install
 
 ```powershell

@@ -13,6 +13,27 @@ DSH 的 `/api` 面带两层闸（信任栅栏 + 浏览器鉴权），跨机客�
 本插件跑在 DSH 进程内直接调用宿主领域服务（typertGateway 分发器、session 流、waterfall），
 对外靠 API Key 鉴权 + deny-by-default 白名单保护。
 
+## 支持的 DSH 版本
+
+门面跑在 DSH 宿主**内部**，兼容面 = 宿主版本。声明区间见 `package.json` 的
+`peerDependencies`（`^0.1.2-rc.1`，覆盖 0.1.2–0.1.x 全线）；下表是**端到端实测通过**
+的配对——wire 契约、问答/授权卡片链、GUI token 捕获——而非仅 semver 声明：
+
+| DSH | 状态 | 依据 |
+| --- | --- | --- |
+| `0.1.2-rc.1` | ✅ verified | 全链 smoke（`dsh-agent-manager/scripts/smoke-proxy-b.ts`，含真实模型回合） |
+| `0.1.5-rc.2` | ✅ verified | 全链 + 问答/授权卡片链 smoke（钉版提交 `#b592b4f`）；见下方安装说明 |
+| `0.1.1-rc.2` | ⚠️ legacy | 契约自该时代冻结；不再是支持基线 |
+
+> **0.1.5 安装说明**：虽然 `^0.1.2-rc.1` 语义上覆盖 0.1.5，npm 的严格 peer
+> 解析仍会拒绝默认安装（ERESOLVE）——组装 0.1.5 profile 时用
+> `npm install --legacy-peer-deps`。消费方在自己的版本矩阵里跟踪此项
+> （`dsh-agent-manager` `src/dsh-matrix.ts` 的 `needsLegacyPeerDeps`）。
+
+消费方按**提交**钉版（`github:litestartup-com/dsh-api-gateway#<sha>`），每条 DSH
+线在钉版移动前重新实测，验证记录在内部设计库（`dsh-facts`）。更新的 DSH 线
+（如 `0.1.6-alpha.*`）**尚未验证**。
+
 ## 安装
 
 ```powershell
