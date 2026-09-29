@@ -30,3 +30,31 @@ jobs:
           DSH_AGW_BASE: ${{ vars.DSH_AGW_BASE }}
           DSH_AGW_KEY: ${{ secrets.DSH_AGW_KEY }}
         run: pnpm smoke
+
+  # Standalone API stack (docker compose): build the node image from this checkout,
+  # boot nginx + gateway, and run the zero-dependency wiring smoke through the front
+  # door. No model key in CI — the smoke covers health/auth/whitelist/envelopes/mux,
+  # not real turns. Container-semantics regressions (uid, volume seeding, nginx
+  # upgrade path) are exactly what a local-no-docker dev machine cannot catch.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Generate .env
+        run: bash docker/gen-env.sh
+      - name: Build the stack
+        run: docker compose build
+      - name: Boot the stack (waits for the gateway healthcheck)
+        run: docker compose up -d --wait --timeout 420
+      - name: Stack smoke (wiring only)
+        run: node docker/smoke.mjs
+      - name: Compose logs (on failure)
+        if: failure()
+        run: docker compose logs --tail=200
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans

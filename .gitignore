@@ -1,6 +1,12 @@
 node_modules/
 *.tsbuildinfo
 
+# standalone API stack (docker compose): local runtime state
+.env
+workspaces/
+ssl/
+docker/profile-lock/.tmp-*/
+
 # local development context (not published, not tracked)
 CONTEXT.md
 RULE.md

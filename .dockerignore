@@ -1,0 +1,21 @@
+# Build context = repo root (docker/Dockerfile COPYs this checkout as the facade source).
+# Keep the image copy a clean source tree: no local state, no secrets, no host binaries.
+.git
+.github
+node_modules
+**/node_modules
+.env
+.env.*
+!.env.example
+workspaces/
+ssl/
+*.tgz
+*.tar.gz
+*.tsbuildinfo
+CONTEXT.md
+RULE.md
+REFACTOR.md
+REFACTOR-PLAN.md
+DESIGN.md
+PLAN*.md
+docker/profile-lock/.tmp-*

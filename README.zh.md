@@ -45,6 +45,91 @@ dsh plugin --profile web add github:litestartup-com/dsh-api-gateway
 > 命名避让：DSH 自带内置包 `@deepseek-ai/dsh-api-gateway`（typert 分发器），与本插件无关。
 > 本插件 = **外部 HTTP 门面**；settings 命名空间 / 组合行 / 服务字段均为 `ohdsh-api-facade`。
 
+## Docker 部署（独立 API 栈）
+
+仓库自带一套自包含的 compose 栈，把门面作为**独立对外的 API 服务**跑起来——
+不需要 manager，也不需要任何额外接线：
+
+```
+客户端 ──HTTP──▶ nginx (:${HTTP_PORT}) ──仅 /api-gw/──▶ gateway 容器
+                                                        = DSH 宿主 + 本门面插件
+```
+
+gateway 端口不对外发布；nginx 是唯一入口且**失败即关闭**（fail-closed）：只反代
+`/api-gw/`，其余路径（DSH 网页 GUI、`/api`、静态资源）一律 404。门后还有门面自身
+的 API-Key 鉴权与默认拒绝白名单——两层独立防线。
+
+### 快速开始
+
+```bash
+bash docker/gen-env.sh          # 生成 .env（HOST_UID/GID、随机 GW_KEY），幂等
+# 编辑 .env：填入 DEEPSEEK_API_KEY（真实会话回合必需）
+docker compose up -d --build    # 构建节点镜像（DSH 钉版 + 提交的依赖锁）并启动
+node docker/smoke.mjs           # 接线验收；加 --model 跑一发真实模型回合
+```
+
+API 基址为 `http://<host>:${HTTP_PORT}/api-gw/v1`，用 `.env` 里的 `GW_KEY`
+作 `X-API-Key` 鉴权：
+
+```bash
+curl -s http://127.0.0.1/api-gw/v1/health
+curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
+  -H "X-API-Key: $GW_KEY" -H 'content-type: application/json' \
+  -d '{"type":"client-request","rpcId":"1","method":"session.list","payload":{}}'
+```
+
+### 文件清单
+
+| 路径 | 作用 |
+| --- | --- |
+| `docker-compose.yml` | nginx + gateway 两服务，健康门控启动 |
+| `docker/Dockerfile` | 一容器 = 一 DSH API 节点（DSH 钉版 + 本 checkout 的门面） |
+| `docker/gen-profile.mjs` | 构建期 profile 生成器（锁驱动 `npm ci`；`--lock-only` 刷新锁） |
+| `docker/profile-lock/` | 提交的依赖锁（可复现依赖树，每个 DSH 版本一份） |
+| `docker/entrypoint.sh` | 幂等 seed：profile → 卷、`GW_KEY` → settings.yaml |
+| `docker/nginx/gateway.conf` | 失败即关闭的入口（仅 API 前缀；带 WebSocket 升级） |
+| `docker/gen-env.sh` | `.env` 生成器（HOST_UID/GID 红线、随机 `GW_KEY`） |
+| `docker/smoke.mjs` | 零依赖栈级验收（含裸 WS 的 mux 检查） |
+
+### .env 参考
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `HTTP_PORT` | `80` | nginx 对外端口（v1 为纯 HTTP，TLS 未接线） |
+| `GW_KEY` | 生成 | 门面静态 API 密钥（`X-API-Key`）。留空则一次性 `POST /key` 自助发放通道保持开放——公网不建议 |
+| `DEEPSEEK_API_KEY` | — | 模型凭据；真实会话回合必需 |
+| `DSH_VERSION` | `0.1.5-rc.2` | 烘进镜像的 DSH 钉版线（需有对应的 `docker/profile-lock/` 锁文件） |
+| `NGINX_IMAGE` | `nginx:alpine` | alpine 拉不动时覆盖（如 `docker.m.daocloud.io/library/nginx:alpine`） |
+| `NODE_IMAGE` / `NPM_REGISTRY` | docker.io / npmjs | 构建期镜像源（国内构建） |
+| `HOST_UID` / `HOST_GID` | `1000` | 容器运行 uid = 宿主文件属主 uid（`gen-env.sh` 自动写入） |
+| `GW_ADMIN_KEY` | — | 可选：启用 `{prefix}/admin/*` 端点 |
+| `GW_ALLOW_FULL_ACCESS` | — | 可选 `true`：允许沙箱路由授予 `danger-full-access`（风险告知见「配置」） |
+| `GW_EXPOSE_ERRORS` | — | 可选 `false`：错误响应不带内部细节（公网部署建议） |
+| `GW_CORS_ORIGIN` | — | 可选：公网部署收紧 CORS 来源 |
+
+### 会话与工作区
+
+宿主 `./workspaces` 挂载为容器内 `/workspace`。通过 API 建会话时 `cwd` 传该挂载点
+下的路径（如 `/workspace/my-project`）——同一棵树在宿主上就是
+`./workspaces/my-project`。DSH 状态（settings、凭据、会话日志）存于命名卷
+`gateway-data`，`docker compose down` 不丢；`down -v` 才会清空。
+
+### 升级与锁刷新
+
+`docker compose up -d --build` 用当前 checkout 重建镜像。entrypoint 在镜像的
+seed 版本变化时（DSH 钉版、门面版本或插件内容）自动重新 seed 卷内 profile——
+无需手工步骤，`.env` 的 `GW_KEY` 始终是密钥真相源。
+
+`DSH_VERSION` 或门面依赖区间变更时，先刷新提交的锁：
+
+```bash
+node docker/gen-profile.mjs --lock-only 0.1.5-rc.2
+# → 生成 docker/profile-lock/0.1.5-rc.2.package-lock.json —— 提交它
+```
+
+> 调试提示：DSH 网页 GUI 默认不暴露。需要时取消 `docker-compose.yml` 里的回环
+> 映射注释（`127.0.0.1:3081:3080`），经 SSH 隧道访问——绝不放到公网面。
+
 ## 配置
 
 | 字段 | 默认 | 说明 |

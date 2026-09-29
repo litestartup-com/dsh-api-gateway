@@ -1,0 +1,85 @@
+# Standalone API stack: nginx (front door) + gateway (DSH host + ohdsh-api-facade).
+#
+# Usage:
+#   bash docker/gen-env.sh        # generate .env (idempotent; then fill in DEEPSEEK_API_KEY)
+#   docker compose up -d --build
+#   node docker/smoke.mjs         # wiring acceptance (add --model for a real model turn)
+#
+# The gateway port is NOT published: nginx on ${HTTP_PORT} is the only external surface,
+# and it proxies /api-gw/ only (everything else 404 — see docker/nginx/gateway.conf).
+name: ohdsh-api
+
+services:
+  nginx:
+    # No nginx:alpine cache on the host? Set NGINX_IMAGE in .env (e.g. nginx:latest or
+    # docker.m.daocloud.io/library/nginx:alpine for China).
+    image: ${NGINX_IMAGE:-nginx:alpine}
+    container_name: ohdsh-api-nginx
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      # TLS is not wired in v1; when adding it, publish 443 and mount ./ssl read-only
+      # (see the note at the bottom of docker/nginx/gateway.conf).
+    volumes:
+      - ./docker/nginx/gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [api]
+
+  gateway:
+    build:
+      # Context = repo root: the image installs the facade from THIS checkout.
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        DSH_VERSION: ${DSH_VERSION:-0.1.5-rc.2}
+        # China mirrors — set them in .env when Docker Hub / npmjs are unreachable:
+        #   NODE_IMAGE=docker.m.daocloud.io/library/node:22-bookworm-slim
+        #   NPM_REGISTRY=https://registry.npmmirror.com
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    image: ohdsh/api-facade-node:${DSH_VERSION:-0.1.5-rc.2}
+    container_name: ohdsh-api-gateway
+    # Same uid as the host deploy user, so the ./workspaces bind mount reads and writes
+    # identically on both sides (deployment red line A). HOST_UID/HOST_GID come from
+    # docker/gen-env.sh — every bootstrap path must write them.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      # Static API key for the facade (written into $DSH_HOME/settings.yaml by the
+      # entrypoint). Empty = no static key; the one-time POST /api-gw/v1/key bootstrap
+      # stays open until the first key is minted (do NOT leave that exposed publicly).
+      GW_KEY: ${GW_KEY:-}
+      # Model credentials — required for real session turns.
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # Optional facade knobs (see README "Configuration"):
+      GW_ADMIN_KEY: ${GW_ADMIN_KEY:-}
+      GW_ALLOW_FULL_ACCESS: ${GW_ALLOW_FULL_ACCESS:-}
+      GW_EXPOSE_ERRORS: ${GW_EXPOSE_ERRORS:-}
+      GW_CORS_ORIGIN: ${GW_CORS_ORIGIN:-}
+    command: ["--port", "3080"]
+    volumes:
+      # DSH_HOME: profile seed, settings.yaml, credentials, session logs.
+      - gateway-data:/data
+      # Session workspaces. Clients pass cwd under /workspace to session.create
+      # (e.g. /workspace/my-project); the same tree is ./workspaces on the host.
+      - ./workspaces:/workspace
+    # Debug only — the DSH web GUI on the host loopback (SSH-tunnel target, never public):
+    # ports:
+    #   - "127.0.0.1:3081:3080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3080/api-gw/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      # First boot seeds the profile tree into the volume; slow disks can take a while.
+      start_period: 120s
+    restart: unless-stopped
+    networks: [api]
+
+volumes:
+  gateway-data:
+
+networks:
+  api:
+    name: ohdsh-api

@@ -59,6 +59,98 @@ Add one row to the host composition (see `examples/cordis.yml`) and restart DSH.
 > **external HTTP facade**; its settings namespace / composition row / service
 > field are all `ohdsh-api-facade`.
 
+## Docker deployment (standalone API stack)
+
+The repo ships a self-contained compose stack that runs the facade as a
+**standalone, public-facing API service** — no manager and no extra wiring
+required:
+
+```
+client ──HTTP──▶ nginx (:${HTTP_PORT}) ──/api-gw/ only──▶ gateway container
+                                                          = DSH host + this facade
+```
+
+The gateway port is never published; nginx is the only front door and it is
+**fail-closed**: only `/api-gw/` is proxied, everything else (the DSH web GUI,
+`/api`, assets) answers 404. Behind that door the facade enforces its own
+API-key auth and the deny-by-default method whitelist — two independent layers.
+
+### Quickstart
+
+```bash
+bash docker/gen-env.sh          # generate .env (HOST_UID/GID, a random GW_KEY) — idempotent
+# edit .env: fill in DEEPSEEK_API_KEY (required for real session turns)
+docker compose up -d --build    # builds the node image (pinned DSH + committed lock) and boots
+node docker/smoke.mjs           # wiring acceptance; add --model for one real model turn
+```
+
+The API base becomes `http://<host>:${HTTP_PORT}/api-gw/v1`, authenticated with
+`GW_KEY` from `.env` as `X-API-Key`:
+
+```bash
+curl -s http://127.0.0.1/api-gw/v1/health
+curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
+  -H "X-API-Key: $GW_KEY" -H 'content-type: application/json' \
+  -d '{"type":"client-request","rpcId":"1","method":"session.list","payload":{}}'
+```
+
+### Files
+
+| Path | Role |
+| --- | --- |
+| `docker-compose.yml` | nginx + gateway services, health-gated startup |
+| `docker/Dockerfile` | one container = one DSH API node (pinned DSH + the facade from this checkout) |
+| `docker/gen-profile.mjs` | build-time profile generator (lock-driven `npm ci`; `--lock-only` refreshes the lock) |
+| `docker/profile-lock/` | committed dependency locks (reproducible trees, one per DSH version) |
+| `docker/entrypoint.sh` | idempotent seeding: profile → volume, `GW_KEY` → settings.yaml |
+| `docker/nginx/gateway.conf` | the fail-closed front door (API prefix only; WebSocket-upgrade aware) |
+| `docker/gen-env.sh` | `.env` generator (HOST_UID/GID red line, random `GW_KEY`) |
+| `docker/smoke.mjs` | zero-dependency stack acceptance (includes a raw-WS mux check) |
+
+### .env reference
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `HTTP_PORT` | `80` | External nginx port (plain HTTP; TLS is not wired in v1) |
+| `GW_KEY` | generated | Static facade API key (`X-API-Key`). Empty leaves the one-time `POST /key` bootstrap open — not recommended on a public surface |
+| `DEEPSEEK_API_KEY` | — | Model credential; required for real session turns |
+| `DSH_VERSION` | `0.1.5-rc.2` | Pinned DSH line baked into the image (needs a matching `docker/profile-lock/` entry) |
+| `NGINX_IMAGE` | `nginx:alpine` | Override where alpine cannot be pulled (e.g. `docker.m.daocloud.io/library/nginx:alpine`) |
+| `NODE_IMAGE` / `NPM_REGISTRY` | docker.io / npmjs | Build-time mirrors for GFW builds |
+| `HOST_UID` / `HOST_GID` | `1000` | Container runtime uid = host file-owner uid (written by `gen-env.sh`) |
+| `GW_ADMIN_KEY` | — | Optional: enables the `{prefix}/admin/*` endpoints |
+| `GW_ALLOW_FULL_ACCESS` | — | Optional `true`: the sandbox route may grant `danger-full-access` (risk notice under Configuration) |
+| `GW_EXPOSE_ERRORS` | — | Optional `false`: strip internal error details (recommended for public deployments) |
+| `GW_CORS_ORIGIN` | — | Optional: tighten CORS origin(s) for public deployments |
+
+### Sessions & workspaces
+
+`./workspaces` on the host is mounted at `/workspace` in the gateway container.
+When creating a session through the API, pass a `cwd` under that mount (e.g.
+`/workspace/my-project`) — the same tree is visible as
+`./workspaces/my-project` on the host. DSH state (settings, credentials,
+session logs) lives in the `gateway-data` named volume and survives
+`docker compose down`; `down -v` wipes it.
+
+### Upgrades & lock refresh
+
+`docker compose up -d --build` rebuilds the image from the current checkout.
+The entrypoint re-seeds the profile into the volume whenever the image's
+seed version changes (DSH pin, facade version, or plugin content) — no manual
+step, and `.env`'s `GW_KEY` remains the source of truth for the key.
+
+Refresh the committed lock first whenever `DSH_VERSION` or the facade's
+dependency ranges change:
+
+```bash
+node docker/gen-profile.mjs --lock-only 0.1.5-rc.2
+# → writes docker/profile-lock/0.1.5-rc.2.package-lock.json — commit it
+```
+
+> Debug note: the DSH web GUI is not exposed. If you need it, uncomment the
+> loopback mapping in `docker-compose.yml` (`127.0.0.1:3081:3080`) and reach it
+> through an SSH tunnel — never on a public surface.
+
 ## Configuration
 
 | Field | Default | Description |
