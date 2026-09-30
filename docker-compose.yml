@@ -21,6 +21,9 @@ services:
       # (see the note at the bottom of docker/nginx/gateway.conf).
     volumes:
       - ./docker/nginx/gateway.conf:/etc/nginx/conf.d/default.conf:ro
+      # Optional add-on locations (empty in the base stack; examples/demos overrides
+      # this mount with its own location files).
+      - ./docker/nginx/locations.d:/etc/nginx/conf.d/locations.d:ro
     depends_on:
       gateway:
         condition: service_healthy

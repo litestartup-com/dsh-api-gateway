@@ -146,6 +146,14 @@ node docker/gen-profile.mjs --lock-only 0.2.0-rc.2
 > 调试提示：DSH 网页 GUI 默认不暴露。需要时取消 `docker-compose.yml` 里的回环
 > 映射注释（`127.0.0.1:3081:3080`），经 SSH 隧道访问——绝不放到公网面。
 
+### 网页 demo
+
+`examples/demos/` 提供两个跑在本栈之上的网页 demo（compose overlay 把它们挂在同一个
+nginx 前门后）：**KB Studio**（`/kb/`——知识库管理，AI 管理员会话钉
+`workspace-write` 档）与**智能客服**（`/cs/`——基于同一知识库的 `read-only` 只读
+客服；知识库即本项目文档）。两者都是零依赖 BFF + 原生 JS 页面，同时是线协议的
+参考客户端——详见 [`examples/demos/README.md`](examples/demos/README.md)。
+
 ## 配置
 
 | 字段 | 默认 | 说明 |

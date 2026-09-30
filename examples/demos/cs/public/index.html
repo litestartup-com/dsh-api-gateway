@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support — ohdsh-api-facade</title>
+<link rel="stylesheet" href="./style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>">
+</head>
+<body>
+<div class="cs-wrap">
+  <header class="cs-head">
+    <div class="avatar">💬</div>
+    <div>
+      <h1>ohdsh-api-facade Support</h1>
+      <p class="sub">
+        Answers grounded in the project knowledge base
+        <span class="badge sandbox-ro"><span class="dot"></span>read-only sandbox</span>
+      </p>
+    </div>
+    <div class="spacer"></div>
+    <span class="conn" id="conn" title="agent event stream"><span class="dot" id="conn-dot"></span><span id="conn-text"></span></span>
+  </header>
+
+  <main class="cs-chat" id="chat">
+    <div class="cs-welcome" id="welcome">
+      <div class="big">👋</div>
+      <h2>How can I help?</h2>
+      <p>Ask me anything about deploying or using ohdsh-api-facade.</p>
+      <div class="chips" id="chips">
+        <button class="chip" data-q="How do I deploy it with Docker?">How do I deploy it with Docker?</button>
+        <button class="chip" data-q="What API endpoints are available?">What API endpoints are available?</button>
+        <button class="chip" data-q="How does API-key authentication work?">How does API-key auth work?</button>
+        <button class="chip" data-q="Can I use the plugin without the Docker stack?">Can I use it without Docker?</button>
+      </div>
+    </div>
+  </main>
+
+  <footer class="cs-foot">
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="Type your question…"></textarea>
+      <button class="btn primary send" id="send">Send</button>
+    </div>
+    <div class="cs-disclaimer">AI support demo — answers are generated from the project docs and may be imperfect. <button class="btn ghost sm cs-newchat" id="newchat" hidden>New conversation</button></div>
+  </footer>
+</div>
+
+<div id="toast"></div>
+<script src="./vendor/marked.min.js"></script>
+<script src="./vendor/purify.min.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

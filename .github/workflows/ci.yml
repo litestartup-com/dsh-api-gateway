@@ -52,9 +52,35 @@ jobs:
         run: docker compose up -d --wait --timeout 420
       - name: Stack smoke (wiring only)
         run: node docker/smoke.mjs
+      # Web demos (examples/demos): boot the compose overlay on top of the running
+      # stack and check the BFF wiring — pages, health, seeded tree. Model turns are
+      # not exercised in CI (no key); the live-host verification covers those.
+      - name: Boot the web demos (compose overlay)
+        run: |
+          mkdir -p workspaces/kb workspaces/cs
+          docker compose -f docker-compose.yml -f examples/demos/compose.demos.yml up -d --build
+      - name: Demo smoke (BFF wiring)
+        run: |
+          set -e
+          PORT=$(grep '^HTTP_PORT=' .env | cut -d= -f2- || echo 80)
+          ok=0
+          for i in $(seq 1 45); do
+            ok=1
+            for p in /kb/ /cs/ /kb/api/health /cs/api/health; do
+              curl -fsS "http://127.0.0.1:${PORT}$p" -o /dev/null || ok=0
+            done
+            [ "$ok" = 1 ] && break
+            sleep 2
+          done
+          [ "$ok" = 1 ] || { echo "demo endpoints never came up"; exit 1; }
+          curl -fsS "http://127.0.0.1:${PORT}/kb/api/tree" | grep -q 'content/docs/README.md'
+          code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/" --max-time 5)
+          [ "$code" = 404 ] || { echo "front door must stay fail-closed: / returned $code"; exit 1; }
+          echo DEMOS-OK
       - name: Compose logs (on failure)
         if: failure()
-        run: docker compose logs --tail=200
+        run: |
+          docker compose -f docker-compose.yml -f examples/demos/compose.demos.yml logs --tail=200
       - name: Tear down
         if: always()
         run: docker compose down -v --remove-orphans

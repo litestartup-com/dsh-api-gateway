@@ -1,0 +1,71 @@
+# Demo overlay for the standalone API stack — adds two web demos behind the SAME
+# nginx front door and the SAME gateway node (one DSH host serving multiple apps):
+#
+#   http://<host>:${HTTP_PORT}/kb/   KB Studio — knowledge-base management
+#                                    (direct file CRUD + an AI steward session pinned
+#                                     to workspace-write; approvals auto-decided)
+#   http://<host>:${HTTP_PORT}/cs/   Support widget — read-only support agent grounded
+#                                    in the same knowledge base (session pinned to
+#                                     read-only; clarifying questions become chat cards)
+#
+# Usage (from the repo root, with the base stack's .env in place):
+#   mkdir -p workspaces/kb workspaces/cs
+#   docker compose -f docker-compose.yml -f examples/demos/compose.demos.yml up -d --build
+#
+# Both BFFs hold the facade API key server-side; browsers only ever talk to a BFF.
+
+services:
+  nginx:
+    volumes:
+      # Replaces the base (empty) locations.d mount: adds /kb/ and /cs/ proxy locations.
+      # The fail-closed default in gateway.conf is untouched — everything else stays 404.
+      - ./examples/demos/nginx/locations.d:/etc/nginx/conf.d/locations.d:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+      kb-demo:
+        condition: service_started
+      cs-demo:
+        condition: service_started
+
+  kb-demo:
+    build:
+      context: .
+      dockerfile: examples/demos/kb/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    image: ohdsh/demo-kb:0.1.0
+    container_name: ohdsh-demo-kb
+    # Same uid convention as the gateway (deployment red line A): the KB bind mount
+    # reads and writes identically on both sides.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      PORT: 8101
+      GW_BASE: http://gateway:3080
+      GW_KEY: ${GW_KEY:-}
+      KB_ROOT: /kb                # BFF-side mount of ./workspaces/kb
+      AGENT_CWD: /workspace/kb    # gateway-side path of the same tree
+    volumes:
+      - ./workspaces/kb:/kb
+    restart: unless-stopped
+    networks: [api]
+
+  cs-demo:
+    build:
+      context: .
+      dockerfile: examples/demos/cs/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    image: ohdsh/demo-cs:0.1.0
+    container_name: ohdsh-demo-cs
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      PORT: 8102
+      GW_BASE: http://gateway:3080
+      GW_KEY: ${GW_KEY:-}
+      CS_ROOT: /cs                # BFF-side mount of ./workspaces/cs (persona only)
+      AGENT_CWD: /workspace/cs    # gateway-side path; the KB is read at /workspace/kb
+    volumes:
+      - ./workspaces/cs:/cs
+    restart: unless-stopped
+    networks: [api]

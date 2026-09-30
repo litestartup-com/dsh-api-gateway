@@ -1,0 +1,2 @@
+# Intentionally empty: the base stack ships no add-on locations.
+# examples/demos overrides this mount — see examples/demos/compose.demos.yml.

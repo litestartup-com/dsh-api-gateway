@@ -170,6 +170,16 @@ node docker/gen-profile.mjs --lock-only 0.2.0-rc.2
 > loopback mapping in `docker-compose.yml` (`127.0.0.1:3081:3080`) and reach it
 > through an SSH tunnel — never on a public surface.
 
+### Web demos
+
+`examples/demos/` ships two web demos on top of this stack (a compose overlay adds
+them behind the same nginx door): **KB Studio** (`/kb/` — knowledge-base management
+with an AI steward session pinned to `workspace-write`) and a **Support widget**
+(`/cs/` — a read-only support agent grounded in the same knowledge base, which is
+this project's own documentation). Both are zero-dependency BFF + vanilla-JS apps
+and double as reference clients for the wire contract — see
+[`examples/demos/README.md`](examples/demos/README.md).
+
 ## Configuration
 
 | Field | Default | Description |

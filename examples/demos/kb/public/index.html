@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KB Studio — ohdsh-api-facade demo</title>
+<link rel="stylesheet" href="./style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
+</head>
+<body>
+<header class="kb-topbar">
+  <div class="brand"><span class="logo">📚</span> KB Studio</div>
+  <span class="badge">ohdsh-api-facade</span>
+  <span class="badge sandbox-write"><span class="dot"></span>workspace-write</span>
+  <div class="spacer"></div>
+  <span class="conn" id="conn" title="agent event stream"><span class="dot" id="conn-dot"></span><span id="conn-text">connecting…</span></span>
+  <button class="btn" id="sync-btn" title="Re-sync content/docs from the repository">⟳ Refresh from repo</button>
+  <button class="btn primary" id="chat-toggle">✦ AI steward</button>
+</header>
+
+<div class="kb-layout" id="layout">
+  <aside class="kb-files">
+    <div class="head">
+      <div class="row">
+        <input class="search" id="search" type="search" placeholder="Filter files…">
+      </div>
+      <div class="row">
+        <button class="btn sm" id="new-note" style="flex:1">＋ New note</button>
+      </div>
+    </div>
+    <div class="kb-tree" id="tree"></div>
+  </aside>
+
+  <section class="kb-main">
+    <div class="meta" id="meta" hidden>
+      <span class="path" id="meta-path"></span>
+      <span class="badge synced" id="meta-synced" hidden>synced from repo</span>
+      <div class="spacer"></div>
+      <button class="btn sm" id="edit-btn">✎ Edit</button>
+      <button class="btn sm danger" id="delete-btn">🗑 Delete</button>
+    </div>
+    <div class="kb-viewer" id="viewer">
+      <div class="kb-empty"><div class="box">
+        <div class="big">📂</div>
+        <div>Select a file from the left, or ask the AI steward to draft one.</div>
+      </div></div>
+    </div>
+    <div class="kb-editor" id="editor" hidden>
+      <div class="bar">
+        <button class="btn primary sm" id="save-btn">Save</button>
+        <button class="btn sm" id="cancel-edit">Cancel</button>
+        <div class="spacer" style="flex:1"></div>
+        <span class="badge" id="edit-path"></span>
+      </div>
+      <textarea id="edit-area" spellcheck="false"></textarea>
+    </div>
+  </section>
+
+  <aside class="kb-chat" id="chat">
+    <div class="head">
+      <span>✦</span><span class="t">AI steward</span>
+      <span class="badge sandbox-write">workspace-write</span>
+      <div class="spacer"></div>
+      <button class="btn ghost sm" id="chat-close">✕</button>
+    </div>
+    <div class="msgs" id="chat-msgs"></div>
+    <div class="foot">
+      <div class="composer">
+        <textarea id="chat-input" rows="1" placeholder="Ask the steward to draft or reorganize notes…"></textarea>
+        <button class="btn primary send" id="chat-send">Send</button>
+      </div>
+      <div class="hint">tool approvals are auto-decided by this demo (the sandbox pin is the real guard)</div>
+    </div>
+  </aside>
+</div>
+
+<div id="toast"></div>
+<script src="./vendor/marked.min.js"></script>
+<script src="./vendor/purify.min.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>
