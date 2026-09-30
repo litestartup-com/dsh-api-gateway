@@ -28,18 +28,31 @@ const REPO_ROOT = join(import.meta.dirname, '..')
 // Version: env wins, then a positional argument, then the default (a verified pairing
 // from the README "Supported DSH versions" table with a committed profile-lock entry).
 const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'))
-const DSH_VERSION = process.env.DSH_VERSION ?? positional[0] ?? '0.1.5-rc.2'
+const DSH_VERSION = process.env.DSH_VERSION ?? positional[0] ?? '0.2.0-rc.2'
 const NPM_REGISTRY = process.env.NPM_REGISTRY ?? 'https://registry.npmjs.org'
 const LOCK_DIR = process.env.LOCK_DIR ?? join(import.meta.dirname, 'profile-lock')
 const PROFILE_NAME = 'api-node'
 
 // Kept in sync with dsh-agent-manager src/dsh-matrix.ts needsLegacyPeerDeps / LEGACY_PEER_PINS
-// (fact card dsh-facts §12/§14): the facade peer range ^0.1.2-rc.1 does not reach the 0.1.5
-// line, so npm's strict peer resolution is a guaranteed ERESOLVE without --legacy-peer-deps;
-// and legacy mode skips EVERY peer, while dsh-app-boot statically imports cordis-plugin-group
-// and 23 old-family-name packages exist only in the peer range — pin them as direct deps.
-const LEGACY_PEER_DEPS_VERSIONS = ['0.1.5-rc.2']
+// (fact card dsh-facts §12/§14): the facade peer range does not reach the newer lines under
+// npm's strict prerelease peer resolution, so install is a guaranteed ERESOLVE without
+// --legacy-peer-deps; and legacy mode skips EVERY peer, so peer-only packages that the host
+// statically imports must be pinned as direct deps.
+// 0.2.0-rc.2 seed table = dsh-app-boot@0.2.0-rc.2 peerDependencies (registry manifest, 2026-09-30)
+// — the packages legacy mode skips; most 0.1.5-era pins became real dsh-base deps in the
+// 0.2.0 tree (rename ledger, upgrade card J1-16) and no longer need pinning. The boot probe
+// adds any further ERR_MODULE_NOT_FOUND package the same way the 0.1.5 table was derived (M1).
+const LEGACY_PEER_DEPS_VERSIONS = ['0.1.5-rc.2', '0.2.0-rc.2']
 const LEGACY_PEER_PINS = {
+  '0.2.0-rc.2': {
+    '@deepseek-ai/cordis': '4.0.4',
+    '@deepseek-ai/cordis-plugin-group': '1.0.4',
+    '@deepseek-ai/cordis-plugin-loader': '1.0.5',
+    '@deepseek-ai/cordis-plugin-include': '1.0.9',
+    '@deepseek-ai/dsh-home-paths': '0.2.0-rc.2',
+    '@deepseek-ai/dsh-system-prompt': '0.2.0-rc.2',
+    '@deepseek-ai/dsh-launch-environment': '0.2.0-rc.2',
+  },
   '0.1.5-rc.2': {
     '@deepseek-ai/cordis-plugin-group': '1.0.2',
     '@deepseek-ai/cordis-plugin-hmr': '1.0.17',
@@ -117,7 +130,21 @@ const facadePkg = JSON.parse(readFileSync(join(facadeSrc, 'package.json'), 'utf8
 
 // The port passes CLI --port through as a dynamic expression (a hard-coded 3080 would
 // override --port — the same pit the manager image documents).
-const patchYaml = "- id: webserver\n  config:\n    host: '0.0.0.0'\n    port: !!js ctx.webStartup.port ?? 3080\n"
+//
+// Version-conditional rows (evidence: upgrade cards for the 0.1.5→0.1.7 corridor):
+// - J1-15: `dsh.profile.patchReload` was dropped from the manifest contract (no longer
+//   read/validated); only the legacy 0.1.2/0.1.5 lines keep it (avoids a hard HMR dep there).
+// - J1-22: the DeepSeek session-log upload defaults to ON from the 0.1.7 corridor
+//   (`dsh-session-log-deepseek` Config `enabled` default true, verified in the 0.2.0-rc.2
+//   source). A standalone API node opts OUT explicitly; the row id matches the base
+//   bundle's composition row. Legacy lines keep their verified opt-in default untouched.
+// Version-line gate: the legacy 0.1.2/0.1.5 lines. NOTE the prerelease spelling —
+// "0.1.5-rc.2" has a DASH after the patch number, so patterns like /^0\.1\.(2|5)\./
+// silently miss it (measured: the miss dropped patchReload and 0.1.5 crash-looped
+// with "user patch-layer watching requires the Cordis HMR service").
+const isLegacyLine = /^0\.1\.(2|5)(-|\.)/.test(DSH_VERSION)
+let patchYaml = "- id: webserver\n  config:\n    host: '0.0.0.0'\n    port: !!js ctx.webStartup.port ?? 3080\n"
+if (!isLegacyLine) patchYaml += '- id: session-log-deepseek\n  config:\n    enabled: false\n'
 
 if (seedOnly) {
   // The Dockerfile re-invokes this script AFTER `COPY .` has completed the checkout:
@@ -141,8 +168,9 @@ writeFileSync(join(out, 'package.json'), JSON.stringify(
     dsh: {
       profile: {
         bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'ohdsh-api-facade'],
-        // A node profile does not enable the live patch watcher (avoids a hard HMR dependency).
-        patchReload: 'startup',
+        // J1-15: patchReload was dropped from the manifest contract in the 0.1.7 corridor;
+        // the legacy lines still read it (a node profile does not enable the live patch watcher).
+        ...(isLegacyLine ? { patchReload: 'startup' } : {}),
       },
     },
     dependencies: {

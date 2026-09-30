@@ -29,50 +29,82 @@ if [ ! -d "$DSH_HOME/profiles/$PROFILE_NAME" ] || [ "$SEED_CUR" != "$SEED_NEW" ]
   echo "[entrypoint] profile seeded into $DSH_HOME/profiles/$PROFILE_NAME (seed ${SEED_NEW:0:8})"
 fi
 
-# 2) Facade settings from the environment: the env var is the truth (derived files are
-#    never edited by hand). The file is rewritten whenever it is missing, sits outside
-#    this plugin's namespace, or does not reflect the current GW_* values — a volume can
-#    hold the previous release's old key or old namespace (the 0.1.1->0.1.2 lesson baked
-#    into the manager entrypoint: grep for the key alone is not enough).
-#    Rewrite = whole file, so it is kept RARE on purpose: the host appends its own keys
-#    here at runtime (e.g. the facade's provisionedKey) and a needless rewrite would wipe
-#    them. Every set knob is checked; when all are present the file is left untouched.
+# 2) Facade configuration from the environment: the env vars are the truth (derived files
+#    are never edited by hand). The injection path is VERSION-GATED (upgrade card J1-04):
+#    in the 0.1.7 corridor $DSH_HOME/settings.yaml became a one-shot import (renamed to
+#    settings.yaml.imported at first boot) and ctx.settings.register was removed — plugin
+#    configuration lives in the profile composition. So:
+#      - legacy lines (0.1.2/0.1.5): the settings.yaml namespace mechanism (prod-verified;
+#        rare-rewrite posture because the host appends its own keys, e.g. provisionedKey)
+#      - 0.1.7+/0.2.x: regenerate the SEEDED profile's cordis.patch.yml at every boot =
+#        the image baseline (/opt/api-profile copy: webserver + privacy rows) + the facade
+#        config row built from GW_*. The seeded patch is a derived file (the pristine
+#        baseline stays in the image layer), so unconditional regeneration IS the
+#        red-line posture here — no grep dance, env changes apply on restart.
+#        (Consequence on new lines: POST {prefix}/key bootstrap keys are memory-only —
+#        the durable key path is GW_KEY. Documented in the README.)
 #    NOTE: keys must not contain single quotes (gen-env.sh generates hex-only keys).
-if [[ -n "${GW_KEY:-}" ]]; then
-  NEED_WRITE=1
-  if [ -f "$DSH_HOME/settings.yaml" ]; then
-    NEED_WRITE=0
-    grep -q '^ohdsh-api-facade:' "$DSH_HOME/settings.yaml" 2>/dev/null || NEED_WRITE=1
-    if [ "$NEED_WRITE" = 0 ]; then grep -qF "$GW_KEY" "$DSH_HOME/settings.yaml" || NEED_WRITE=1; fi
-    if [ "$NEED_WRITE" = 0 ] && [[ -n "${GW_ADMIN_KEY:-}" ]]; then
-      grep -qF "$GW_ADMIN_KEY" "$DSH_HOME/settings.yaml" || NEED_WRITE=1
+# NOTE the prerelease spelling: "0.1.5-rc.2" carries a DASH after the patch number —
+# a `0.1.5.*` pattern silently misses it and routes the legacy line down the new path.
+case "${DSH_VERSION:-}" in
+0.1.2-* | 0.1.2.* | 0.1.5-* | 0.1.5.*)
+  if [[ -n "${GW_KEY:-}" ]]; then
+    NEED_WRITE=1
+    if [ -f "$DSH_HOME/settings.yaml" ]; then
+      NEED_WRITE=0
+      grep -q '^ohdsh-api-facade:' "$DSH_HOME/settings.yaml" 2>/dev/null || NEED_WRITE=1
+      if [ "$NEED_WRITE" = 0 ]; then grep -qF "$GW_KEY" "$DSH_HOME/settings.yaml" || NEED_WRITE=1; fi
+      if [ "$NEED_WRITE" = 0 ] && [[ -n "${GW_ADMIN_KEY:-}" ]]; then
+        grep -qF "$GW_ADMIN_KEY" "$DSH_HOME/settings.yaml" || NEED_WRITE=1
+      fi
+      if [ "$NEED_WRITE" = 0 ] && [[ "${GW_ALLOW_FULL_ACCESS:-}" == "true" ]]; then
+        grep -q 'allowFullAccess: true' "$DSH_HOME/settings.yaml" || NEED_WRITE=1
+      fi
+      if [ "$NEED_WRITE" = 0 ] && [[ -n "${GW_EXPOSE_ERRORS:-}" ]]; then
+        grep -q "exposeErrors: $GW_EXPOSE_ERRORS" "$DSH_HOME/settings.yaml" || NEED_WRITE=1
+      fi
+      if [ "$NEED_WRITE" = 0 ] && [[ -n "${GW_CORS_ORIGIN:-}" ]]; then
+        grep -qF "corsOrigin: '$GW_CORS_ORIGIN'" "$DSH_HOME/settings.yaml" || NEED_WRITE=1
+      fi
     fi
-    if [ "$NEED_WRITE" = 0 ] && [[ "${GW_ALLOW_FULL_ACCESS:-}" == "true" ]]; then
-      grep -q 'allowFullAccess: true' "$DSH_HOME/settings.yaml" || NEED_WRITE=1
+    if [ "$NEED_WRITE" = "1" ]; then
+      {
+        echo 'ohdsh-api-facade:'
+        echo "  apiKeys: ['$GW_KEY']"
+        if [[ -n "${GW_ADMIN_KEY:-}" ]]; then echo "  adminKey: '$GW_ADMIN_KEY'"; fi
+        if [[ "${GW_ALLOW_FULL_ACCESS:-}" == "true" ]]; then echo '  allowFullAccess: true'; fi
+        if [[ -n "${GW_EXPOSE_ERRORS:-}" ]]; then echo "  exposeErrors: $GW_EXPOSE_ERRORS"; fi
+        if [[ -n "${GW_CORS_ORIGIN:-}" ]]; then echo "  corsOrigin: '$GW_CORS_ORIGIN'"; fi
+      } > "$DSH_HOME/settings.yaml"
+      chmod 600 "$DSH_HOME/settings.yaml"
+      echo "[entrypoint] wrote $DSH_HOME/settings.yaml (GW_* refreshed)"
     fi
-    if [ "$NEED_WRITE" = 0 ] && [[ -n "${GW_EXPOSE_ERRORS:-}" ]]; then
-      grep -q "exposeErrors: $GW_EXPOSE_ERRORS" "$DSH_HOME/settings.yaml" || NEED_WRITE=1
-    fi
-    if [ "$NEED_WRITE" = 0 ] && [[ -n "${GW_CORS_ORIGIN:-}" ]]; then
-      grep -qF "corsOrigin: '$GW_CORS_ORIGIN'" "$DSH_HOME/settings.yaml" || NEED_WRITE=1
-    fi
+  else
+    echo "[entrypoint] note: GW_KEY is not set -- no static API key is written; the one-time"
+    echo "[entrypoint]       POST {prefix}/key bootstrap stays open until the first key is minted."
   fi
-  if [ "$NEED_WRITE" = "1" ]; then
+  ;;
+*)
+  PATCH_FILE="$DSH_HOME/profiles/$PROFILE_NAME/cordis.patch.yml"
+  if [[ -n "${GW_KEY:-}${GW_ADMIN_KEY:-}${GW_ALLOW_FULL_ACCESS:-}${GW_EXPOSE_ERRORS:-}${GW_CORS_ORIGIN:-}" ]]; then
     {
-      echo 'ohdsh-api-facade:'
-      echo "  apiKeys: ['$GW_KEY']"
-      if [[ -n "${GW_ADMIN_KEY:-}" ]]; then echo "  adminKey: '$GW_ADMIN_KEY'"; fi
-      if [[ "${GW_ALLOW_FULL_ACCESS:-}" == "true" ]]; then echo '  allowFullAccess: true'; fi
-      if [[ -n "${GW_EXPOSE_ERRORS:-}" ]]; then echo "  exposeErrors: $GW_EXPOSE_ERRORS"; fi
-      if [[ -n "${GW_CORS_ORIGIN:-}" ]]; then echo "  corsOrigin: '$GW_CORS_ORIGIN'"; fi
-    } > "$DSH_HOME/settings.yaml"
-    chmod 600 "$DSH_HOME/settings.yaml"
-    echo "[entrypoint] wrote $DSH_HOME/settings.yaml (GW_* refreshed)"
+      cat /opt/api-profile/cordis.patch.yml
+      echo '- id: ohdsh-api-facade'
+      echo '  config:'
+      if [[ -n "${GW_KEY:-}" ]]; then echo "    apiKeys: ['$GW_KEY']"; fi
+      if [[ -n "${GW_ADMIN_KEY:-}" ]]; then echo "    adminKey: '$GW_ADMIN_KEY'"; fi
+      if [[ "${GW_ALLOW_FULL_ACCESS:-}" == "true" ]]; then echo '    allowFullAccess: true'; fi
+      if [[ -n "${GW_EXPOSE_ERRORS:-}" ]]; then echo "    exposeErrors: $GW_EXPOSE_ERRORS"; fi
+      if [[ -n "${GW_CORS_ORIGIN:-}" ]]; then echo "    corsOrigin: '$GW_CORS_ORIGIN'"; fi
+    } > "$PATCH_FILE"
+    chmod 600 "$PATCH_FILE"
+    echo "[entrypoint] regenerated $PATCH_FILE (baseline + facade config from GW_*)"
+  else
+    echo "[entrypoint] note: no GW_* set -- the facade runs on schema defaults; the one-time"
+    echo "[entrypoint]       POST {prefix}/key bootstrap is memory-only on this DSH line."
   fi
-else
-  echo "[entrypoint] note: GW_KEY is not set -- no static API key is written; the one-time"
-  echo "[entrypoint]       POST {prefix}/key bootstrap stays open until the first key is minted."
-fi
+  ;;
+esac
 
 # 3) Model credentials: the DEEPSEEK_API_KEY environment variable ranks highest in the
 #    DSH credential layering, so no file is needed. Without it the node still boots and

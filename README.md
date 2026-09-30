@@ -24,27 +24,43 @@ API-key auth and a deny-by-default whitelist.
 
 The facade runs **inside** a DSH host, so its compatibility surface is the host
 version. The declared range lives in `package.json` `peerDependencies`
-(`^0.1.2-rc.1`, covering the 0.1.2–0.1.x line); the pairings below are the
-ones **verified end-to-end** — wire contract, question/approval card chains,
-and GUI token capture — not merely semver-declared:
+(`^0.1.2-rc.1 || ^0.2.0-0` — dual-range since facade 0.2.4: the 0.2.0 corridor
+broke the old ceiling, and the DSH host enforces peers at install **and**
+startup); the pairings below are the ones **verified end-to-end** — wire
+contract, question/approval card chains, and GUI token capture — not merely
+semver-declared:
 
 | DSH | Status | Evidence |
 | --- | --- | --- |
+| `0.2.0-rc.2` | ✅ verified | Full-chain smoke + question/approval card chains + V3→V4 session-volume migration on the standalone Docker stack (facade 0.2.4, host 192.168.33.11); npm `latest` line |
+| `0.1.5-rc.2` | ✅ verified | Full-chain + card-chain smoke on facade 0.2.4 (dual-compat regression of the 0.2.0 corridor work) and on `#b592b4f` before it; see the install note below |
 | `0.1.2-rc.1` | ✅ verified | Full-chain smoke (`dsh-agent-manager/scripts/smoke-proxy-b.ts`, real model turn) |
-| `0.1.5-rc.2` | ✅ verified | Full-chain + question/approval card-chain smoke on the pinned commit `#b592b4f`; see the install note below |
 | `0.1.1-rc.2` | ⚠️ legacy | Wire contract frozen from this era; not the supported base |
 
 > **0.1.5 install note**: npm's strict peer resolution rejects the default
-> install (ERESOLVE) even though `^0.1.2-rc.1` covers 0.1.5 semantically —
+> install (ERESOLVE) even though the range covers 0.1.5 semantically —
 > compose 0.1.5 profiles with `npm install --legacy-peer-deps`. Consumers track
 > this in their version matrix (`dsh-agent-manager` `src/dsh-matrix.ts`,
-> `needsLegacyPeerDeps`).
+> `needsLegacyPeerDeps`). The same posture applies to the 0.2.0 line.
+
+> **0.2.0 corridor note** (what facade 0.2.4 absorbs, so clients don't have to):
+> the host's `wireStream.open` grew duplex uplink/peer parameters (arity-based
+> detection keeps one code path booting both host generations);
+> `ctx.settings.register` is gone host-side, so the durable key path on 0.2.0
+> hosts is the **composition config** (the Docker stack's entrypoint injects
+> `GW_KEY` into the profile patch; `POST {prefix}/key` bootstrap keys are
+> memory-only there); session logs moved to V4 (V3 volumes are migrated on
+> read — one-way, back up before upgrading); and the DeepSeek session-log
+> upload defaults to **on** (the Docker stack pins it off in the profile
+> patch). The wire contract itself is unchanged — managers and probes pinned to
+> older facade commits keep working against 0.2.0 hosts through this facade.
 
 Consumers pin the facade **by commit**
 (`github:litestartup-com/dsh-api-gateway#<sha>`), so each DSH line is
 re-verified before a pin moves; verification records live in the private
-design library (`dsh-facts`). Newer DSH lines (e.g. `0.1.6-alpha.*`) are
-**not verified yet**.
+design library (`dsh-facts`). The `0.1.6-alpha.*` / `0.1.7-*` lines were
+superseded by `0.2.0` and are **not separately verified** (the 0.2.0 corridor
+spans them via the community jump cards).
 
 ## Install
 
@@ -82,6 +98,7 @@ bash docker/gen-env.sh          # generate .env (HOST_UID/GID, a random GW_KEY) 
 # edit .env: fill in DEEPSEEK_API_KEY (required for real session turns)
 docker compose up -d --build    # builds the node image (pinned DSH + committed lock) and boots
 node docker/smoke.mjs           # wiring acceptance; add --model for one real model turn
+node docker/probe-cards.mjs     # question/approval card chains (respond roundtrips; needs a model key)
 ```
 
 The API base becomes `http://<host>:${HTTP_PORT}/api-gw/v1`, authenticated with
@@ -105,7 +122,9 @@ curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
 | `docker/entrypoint.sh` | idempotent seeding: profile → volume, `GW_KEY` → settings.yaml |
 | `docker/nginx/gateway.conf` | the fail-closed front door (API prefix only; WebSocket-upgrade aware) |
 | `docker/gen-env.sh` | `.env` generator (HOST_UID/GID red line, random `GW_KEY`) |
+| `docker/probe-lib.mjs` | shared probe machinery (config, envelopes, raw-WS client) |
 | `docker/smoke.mjs` | zero-dependency stack acceptance (includes a raw-WS mux check) |
+| `docker/probe-cards.mjs` | question/approval card-chain probe (respond roundtrips + sandbox escalation + file-on-disk proof) |
 
 ### .env reference
 
@@ -114,7 +133,7 @@ curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
 | `HTTP_PORT` | `80` | External nginx port (plain HTTP; TLS is not wired in v1) |
 | `GW_KEY` | generated | Static facade API key (`X-API-Key`). Empty leaves the one-time `POST /key` bootstrap open — not recommended on a public surface |
 | `DEEPSEEK_API_KEY` | — | Model credential; required for real session turns |
-| `DSH_VERSION` | `0.1.5-rc.2` | Pinned DSH line baked into the image (needs a matching `docker/profile-lock/` entry) |
+| `DSH_VERSION` | `0.2.0-rc.2` | Pinned DSH line baked into the image (needs a matching `docker/profile-lock/` entry; `0.1.5-rc.2` remains supported) |
 | `NGINX_IMAGE` | `nginx:alpine` | Override where alpine cannot be pulled (e.g. `docker.m.daocloud.io/library/nginx:alpine`) |
 | `NODE_IMAGE` / `NPM_REGISTRY` | docker.io / npmjs | Build-time mirrors for GFW builds |
 | `HOST_UID` / `HOST_GID` | `1000` | Container runtime uid = host file-owner uid (written by `gen-env.sh`) |
@@ -143,8 +162,8 @@ Refresh the committed lock first whenever `DSH_VERSION` or the facade's
 dependency ranges change:
 
 ```bash
-node docker/gen-profile.mjs --lock-only 0.1.5-rc.2
-# → writes docker/profile-lock/0.1.5-rc.2.package-lock.json — commit it
+node docker/gen-profile.mjs --lock-only 0.2.0-rc.2
+# → writes docker/profile-lock/0.2.0-rc.2.package-lock.json — commit it
 ```
 
 > Debug note: the DSH web GUI is not exposed. If you need it, uncomment the

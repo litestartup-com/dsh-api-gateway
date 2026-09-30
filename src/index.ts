@@ -775,7 +775,7 @@ export default {
         let disposed = false
         void (async () => {
           const gateway = ctx.get('typertGateway', true) as
-            (TypertGateway & { wireStream?: { open?: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>> } }) | undefined
+            (TypertGateway & { wireStream?: { open?: (endpoint: string, payload: unknown, ...rest: unknown[]) => Promise<AsyncIterable<unknown>> } }) | undefined
           // 宿主侧 connection 没有浏览器客户端的 rpc.call；进程内发 $events/result
           // 走共享通道的 Fetch handler（与浏览器信封同形，gateway 拦截路由到
           // dispatchRpc —— dsh-client-connection/src/rpc-host.ts 实证）。
@@ -786,10 +786,22 @@ export default {
               : `connection carrier missing (${describeService(connection)})`
             return
           }
+          // wireStream.open 签名在 0.1.7→0.2.0 走廊漂移（两代宿主树 lib 实证，
+          // 192.168.33.11）：旧宿主 (endpoint, payload, signal)——arity 3；
+          // dsh-api-gateway 0.2.0 起 (endpoint, payload, uplink, peer, signal)——arity 5
+          // （J1-06 duplex uplink + 显式 Peer）。$events 是纯下行：uplink/peer 传
+          // undefined（宿主 releaseUplink 对非异步可迭代静默容忍、openRemoteEvents
+          // 不读 peer）。若按旧 3 参调用新宿主，signal 会落进 uplink 槽而 signal=
+          // undefined——惰性生成器 open 不抛错、首次迭代 AbortSignal.any 才炸，
+          // 泵静默死亡且 health 无错可报（实测：answererFrames=0、问答永久挂起）。
+          const openWire = gateway.wireStream.open
+          const duplexSig = openWire.length >= 5
           const sharedFetch = connection.createSharedFetchHandler('/api')
           try {
             const mounted = await answerer.mountRemote({
-              openStream: (endpoint, payload, signal) => gateway.wireStream!.open!(endpoint, payload, signal),
+              openStream: (endpoint, payload, signal) => (duplexSig
+                ? openWire(endpoint, payload, undefined, undefined, signal)
+                : openWire(endpoint, payload, signal)),
               sendResult: async (args, signal) => {
                 const response = await sharedFetch.fetch(new Request('http://ohdsh-internal/api/$events/result', {
                   method: 'POST',

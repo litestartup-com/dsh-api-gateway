@@ -26,7 +26,7 @@ ARG NPM_REGISTRY=https://registry.npmjs.org
 # Pinned to a VERIFIED pairing from the README "Supported DSH versions" table.
 # 0.1.5-rc.2 needs node >=22.19 (this base) and --legacy-peer-deps with explicit
 # legacy peer pins — both handled by gen-profile.mjs.
-ARG DSH_VERSION=0.1.5-rc.2
+ARG DSH_VERSION=0.2.0-rc.2
 # pnpm pinned to a definite version (same rationale as the manager image: 9 runs
 # dependency build scripts under the old, verified semantics).
 RUN npm install -g @deepseek-ai/dsh@${DSH_VERSION} pnpm@9.15.9 --registry="${NPM_REGISTRY}" --no-audit --no-fund \
@@ -64,12 +64,15 @@ RUN chmod +x /usr/local/bin/ohdsh-api-entrypoint \
 # (a local copy, zero network). HOME points at /data too, so $DSH_HOME/settings.yaml
 # (GW_KEY), credentials, and dsh's ~/.config / ~/.npm writes all land in the same
 # writable volume regardless of the runtime uid.
+# DSH_VERSION is re-exported at runtime: the entrypoint gates the key-injection path on it
+# (legacy 0.1.2/0.1.5 lines -> settings.yaml; 0.1.7+/0.2.x -> profile patch config, card J1-04).
 # The node binds 0.0.0.0 (profile patch): the compose network is internal, the port is
 # NOT published to the host, and nginx is the only front door.
 ENV DSH_HOME=/data \
     HOME=/data \
     NODE_ENV=production \
-    TZ=Asia/Shanghai
+    TZ=Asia/Shanghai \
+    DSH_VERSION=${DSH_VERSION}
 WORKDIR /workspace
 EXPOSE 3080
 ENTRYPOINT ["ohdsh-api-entrypoint"]

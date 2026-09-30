@@ -27,7 +27,7 @@ ensure HOST_UID "$(id -u)"
 ensure HOST_GID "$(id -g)"
 ensure HTTP_PORT "${HTTP_PORT:-80}"
 ensure NGINX_IMAGE "${NGINX_IMAGE:-nginx:alpine}"
-ensure DSH_VERSION "${DSH_VERSION:-0.1.5-rc.2}"
+ensure DSH_VERSION "${DSH_VERSION:-0.2.0-rc.2}"
 ensure GW_KEY "${GW_KEY:-apigw-$(openssl rand -hex 24)}"
 if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
   ensure DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"

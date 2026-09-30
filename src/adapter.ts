@@ -47,24 +47,30 @@ export const REMOTE_METHODS: Readonly<Record<string, { readonly namespace: strin
 }
 
 /**
- * 读取宿主树的真实 DSH 版本（0.1.2 起 host.describe 由 facade 合成，版本
- * 信息从 profile 依赖树里 @deepseek-ai/dsh/package.json 读取——facade 与 DSH
- * 装在同一 profile 的 node_modules，向上走目录树即命中）。
+ * 读取宿主树的真实 DSH 版本（0.1.2 起 host.describe 由 facade 合成）。
+ * 锚点按序探测 profile 依赖树里的 package.json（facade 与 DSH 装在同一
+ * profile 的 node_modules，向上走目录树即命中）：
+ * 1. `@deepseek-ai/dsh` —— 0.1.5 及更早的树里作为传递依赖存在；
+ * 2. `@deepseek-ai/dsh-base` —— profile 的直接依赖，任何线都存在，且版本
+ *    与 DSH_VERSION 同钉（0.2.0 起 CLI 包不再进 profile 树，实测 192.168.33.11
+ *    测试栈：只找 dsh 时回退 0.0.1，加 dsh-base 锚点后恢复真版本）。
  *
- * 读不到（非标准布局/文件缺失）回退协议号 '0.0.1'：manager 侧对版本只作
+ * 都读不到（非标准布局/文件缺失）回退协议号 '0.0.1'：manager 侧对版本只作
  * 信息展示（DSH-FACTS §6 纪律不变），拿不到真版本时不误导。
  */
 export const readHostDshVersion = (): string => {
-  const marker = join('node_modules', '@deepseek-ai', 'dsh', 'package.json')
+  const markers = ['dsh', 'dsh-base'].map((name) => join('node_modules', '@deepseek-ai', name, 'package.json'))
   let dir = dirname(fileURLToPath(import.meta.url))
   for (let depth = 0; depth < 8; depth += 1) {
-    const candidate = join(dir, marker)
-    if (existsSync(candidate)) {
-      try {
-        const version = (JSON.parse(readFileSync(candidate, 'utf8')) as { version?: unknown }).version
-        if (typeof version === 'string' && version !== '') return version
-      } catch {
-        // 文件损坏：继续往上走，最终回退协议号
+    for (const marker of markers) {
+      const candidate = join(dir, marker)
+      if (existsSync(candidate)) {
+        try {
+          const version = (JSON.parse(readFileSync(candidate, 'utf8')) as { version?: unknown }).version
+          if (typeof version === 'string' && version !== '') return version
+        } catch {
+          // 文件损坏：换下一个锚点/继续往上走，最终回退协议号
+        }
       }
     }
     const parent = dirname(dir)

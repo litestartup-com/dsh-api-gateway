@@ -33,13 +33,13 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        DSH_VERSION: ${DSH_VERSION:-0.1.5-rc.2}
+        DSH_VERSION: ${DSH_VERSION:-0.2.0-rc.2}
         # China mirrors — set them in .env when Docker Hub / npmjs are unreachable:
         #   NODE_IMAGE=docker.m.daocloud.io/library/node:22-bookworm-slim
         #   NPM_REGISTRY=https://registry.npmmirror.com
         NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
-    image: ohdsh/api-facade-node:${DSH_VERSION:-0.1.5-rc.2}
+    image: ohdsh/api-facade-node:${DSH_VERSION:-0.2.0-rc.2}
     container_name: ohdsh-api-gateway
     # Same uid as the host deploy user, so the ./workspaces bind mount reads and writes
     # identically on both sides (deployment red line A). HOST_UID/HOST_GID come from

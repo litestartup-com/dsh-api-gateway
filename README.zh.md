@@ -16,23 +16,36 @@ DSH 的 `/api` 面带两层闸（信任栅栏 + 浏览器鉴权），跨机客�
 ## 支持的 DSH 版本
 
 门面跑在 DSH 宿主**内部**，兼容面 = 宿主版本。声明区间见 `package.json` 的
-`peerDependencies`（`^0.1.2-rc.1`，覆盖 0.1.2–0.1.x 全线）；下表是**端到端实测通过**
-的配对——wire 契约、问答/授权卡片链、GUI token 捕获——而非仅 semver 声明：
+`peerDependencies`（自门面 0.2.4 起为双区间 `^0.1.2-rc.1 || ^0.2.0-0`：0.2.0
+走廊打破了旧上界，且 DSH 宿主在安装期**与启动期**双重强制 peer 校验）；下表是
+**端到端实测通过**的配对——wire 契约、问答/授权卡片链、GUI token 捕获——而非仅
+semver 声明：
 
 | DSH | 状态 | 依据 |
 | --- | --- | --- |
+| `0.2.0-rc.2` | ✅ verified | 独立 Docker 栈上全链 smoke + 问答/授权卡片链 + V3→V4 会话卷迁移实测（门面 0.2.4，宿主 192.168.33.11）；npm `latest` 线 |
+| `0.1.5-rc.2` | ✅ verified | 门面 0.2.4 上的全链 + 卡片链双兼容回归（0.2.0 走廊改造后复验），以及此前 `#b592b4f` 的全链验证；见下方安装说明 |
 | `0.1.2-rc.1` | ✅ verified | 全链 smoke（`dsh-agent-manager/scripts/smoke-proxy-b.ts`，含真实模型回合） |
-| `0.1.5-rc.2` | ✅ verified | 全链 + 问答/授权卡片链 smoke（钉版提交 `#b592b4f`）；见下方安装说明 |
 | `0.1.1-rc.2` | ⚠️ legacy | 契约自该时代冻结；不再是支持基线 |
 
-> **0.1.5 安装说明**：虽然 `^0.1.2-rc.1` 语义上覆盖 0.1.5，npm 的严格 peer
+> **0.1.5 安装说明**：虽然声明区间语义上覆盖 0.1.5，npm 的严格 peer
 > 解析仍会拒绝默认安装（ERESOLVE）——组装 0.1.5 profile 时用
 > `npm install --legacy-peer-deps`。消费方在自己的版本矩阵里跟踪此项
 > （`dsh-agent-manager` `src/dsh-matrix.ts` 的 `needsLegacyPeerDeps`）。
+> 0.2.0 线同样适用此姿态。
+
+> **0.2.0 走廊说明**（门面 0.2.4 吸收的差异，客户端零改动）：宿主
+> `wireStream.open` 增加了 duplex uplink/peer 参数（按函数元数探测，一份代码
+> 双代宿主通吃）；宿主侧 `ctx.settings.register` 已删除，0.2.0 宿主的持久密钥
+> 路径改走**组合配置**（Docker 栈 entrypoint 把 `GW_KEY` 注入 profile patch；
+> 此时 `POST {prefix}/key` 自助发放的密钥仅存内存）；会话日志升到 V4（V3 卷
+> 读取时单向迁移——升级前先备份）；DeepSeek 会话日志上传默认**开启**（Docker
+> 栈在 profile patch 里显式钉关）。对外 wire 契约本身不变——钉在旧门面提交上的
+> manager 等消费者经本门面访问 0.2.0 宿主零改动。
 
 消费方按**提交**钉版（`github:litestartup-com/dsh-api-gateway#<sha>`），每条 DSH
-线在钉版移动前重新实测，验证记录在内部设计库（`dsh-facts`）。更新的 DSH 线
-（如 `0.1.6-alpha.*`）**尚未验证**。
+线在钉版移动前重新实测，验证记录在内部设计库（`dsh-facts`）。`0.1.6-alpha.*` /
+`0.1.7-*` 线已被 `0.2.0` 收编，**未单独验证**（0.2.0 走廊经社区跳版卡跨越它们）。
 
 ## 安装
 
@@ -66,6 +79,7 @@ bash docker/gen-env.sh          # 生成 .env（HOST_UID/GID、随机 GW_KEY）�
 # 编辑 .env：填入 DEEPSEEK_API_KEY（真实会话回合必需）
 docker compose up -d --build    # 构建节点镜像（DSH 钉版 + 提交的依赖锁）并启动
 node docker/smoke.mjs           # 接线验收；加 --model 跑一发真实模型回合
+node docker/probe-cards.mjs     # 问答/审批卡片链（respond 往返；需模型密钥）
 ```
 
 API 基址为 `http://<host>:${HTTP_PORT}/api-gw/v1`，用 `.env` 里的 `GW_KEY`
@@ -89,7 +103,9 @@ curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
 | `docker/entrypoint.sh` | 幂等 seed：profile → 卷、`GW_KEY` → settings.yaml |
 | `docker/nginx/gateway.conf` | 失败即关闭的入口（仅 API 前缀；带 WebSocket 升级） |
 | `docker/gen-env.sh` | `.env` 生成器（HOST_UID/GID 红线、随机 `GW_KEY`） |
+| `docker/probe-lib.mjs` | 探针共享底座（配置、信封、裸 WS 客户端） |
 | `docker/smoke.mjs` | 零依赖栈级验收（含裸 WS 的 mux 检查） |
+| `docker/probe-cards.mjs` | 问答/审批卡片链探针（respond 往返 + 沙箱升档 + 文件落盘实证） |
 
 ### .env 参考
 
@@ -98,7 +114,7 @@ curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
 | `HTTP_PORT` | `80` | nginx 对外端口（v1 为纯 HTTP，TLS 未接线） |
 | `GW_KEY` | 生成 | 门面静态 API 密钥（`X-API-Key`）。留空则一次性 `POST /key` 自助发放通道保持开放——公网不建议 |
 | `DEEPSEEK_API_KEY` | — | 模型凭据；真实会话回合必需 |
-| `DSH_VERSION` | `0.1.5-rc.2` | 烘进镜像的 DSH 钉版线（需有对应的 `docker/profile-lock/` 锁文件） |
+| `DSH_VERSION` | `0.2.0-rc.2` | 烘进镜像的 DSH 钉版线（需有对应的 `docker/profile-lock/` 锁文件；`0.1.5-rc.2` 仍在支持范围） |
 | `NGINX_IMAGE` | `nginx:alpine` | alpine 拉不动时覆盖（如 `docker.m.daocloud.io/library/nginx:alpine`） |
 | `NODE_IMAGE` / `NPM_REGISTRY` | docker.io / npmjs | 构建期镜像源（国内构建） |
 | `HOST_UID` / `HOST_GID` | `1000` | 容器运行 uid = 宿主文件属主 uid（`gen-env.sh` 自动写入） |
@@ -123,8 +139,8 @@ seed 版本变化时（DSH 钉版、门面版本或插件内容）自动重新 s
 `DSH_VERSION` 或门面依赖区间变更时，先刷新提交的锁：
 
 ```bash
-node docker/gen-profile.mjs --lock-only 0.1.5-rc.2
-# → 生成 docker/profile-lock/0.1.5-rc.2.package-lock.json —— 提交它
+node docker/gen-profile.mjs --lock-only 0.2.0-rc.2
+# → 生成 docker/profile-lock/0.2.0-rc.2.package-lock.json —— 提交它
 ```
 
 > 调试提示：DSH 网页 GUI 默认不暴露。需要时取消 `docker-compose.yml` 里的回环
