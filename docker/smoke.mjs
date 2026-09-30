@@ -113,6 +113,17 @@ if (isMain(import.meta.url)) {
       const sessionId = created?.sessionId
       if (typeof sessionId !== 'string' || sessionId === '') throw new Error(`no sessionId in create value: ${JSON.stringify(created).slice(0, 200)}`)
       log(`session created: ${sessionId} (cwd=/workspace/${name})`)
+      // Typewriter regression gate (0.2.x hosts): the facade opts into the host's
+      // assistant live stream and re-emits the frozen assistant/chunk wire shape
+      // (facade 0.2.5, dsh-facts §18.13). Attach the mux BEFORE prompting so no
+      // delta is missed; legacy hosts (0.1.x) are not expected to stream chunks.
+      const health2 = await getHealth()
+      const wantChunks = /^0\.[2-9]/.test(String(health2.dshVersion ?? '')) || /^[1-9]/.test(String(health2.dshVersion ?? ''))
+      let mux = null
+      if (wantChunks) {
+        mux = await wsOpen(muxUrl(), { 'X-API-Key': KEY })
+        log(`mux attached for typewriter capture (host ${health2.dshVersion})`)
+      }
       const prompted = await rpc('session.prompt', { sessionId, mode: 'queue', content: [{ type: 'text', text: 'Reply with exactly one word: ok' }] })
       if (prompted?.accepted === false) throw new Error(`prompt not accepted: ${JSON.stringify(prompted).slice(0, 200)}`)
       log('prompt queued; polling history for turn/end (timeout 180s)...')
@@ -120,6 +131,31 @@ if (isMain(import.meta.url)) {
       if (!events.some((e) => typeOf(e) === 'assistant/message')) throw new Error('turn ended without any assistant/message event')
       const reply = events.map(evOf).find((ev) => ev?.type === 'assistant/message')
       log(`turn/end: reason=${evOf(turnEnd)?.data?.reason?.kind ?? '?'}; assistant reply: ${JSON.stringify(reply?.data?.message?.content ?? null).slice(0, 120)}`)
+      if (mux !== null) {
+        const collect = () => {
+          const texts = []
+          let kinds = 0
+          for (const f of mux.frames) {
+            if (f.kind !== 'text') continue
+            try {
+              const j = JSON.parse(f.data)
+              if (j?.payload?.event?.type === 'assistant/chunk' && j.payload.sessionId === sessionId) {
+                kinds++
+                const c = j.payload.event.data?.chunk
+                if (c?.type === 'text-delta' && typeof c.text === 'string') texts.push(c.text)
+              }
+            } catch { /* not JSON */ }
+          }
+          return { texts, kinds }
+        }
+        let got = collect()
+        if (got.kinds === 0) { await sleep(3000); got = collect() } // trailing frames in flight
+        mux.close()
+        if (got.kinds === 0) throw new Error('0.2.x host but ZERO assistant/chunk frames on the mux during the turn (typewriter regression)')
+        const streamed = got.texts.join('')
+        log(`typewriter: ${got.kinds} chunk frame(s), streamed text ${JSON.stringify(streamed.slice(0, 60))}`)
+        if (!streamed.includes('ok')) log('note: streamed deltas do not spell the reply (may lag/omit); frame flow is the evidence')
+      }
     })
   }
 

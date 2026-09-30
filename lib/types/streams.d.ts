@@ -11,6 +11,8 @@ export interface StreamFrame {
     type?: unknown;
     event?: unknown;
     projections?: unknown;
+    /** 0.2.x opt-in live members: {type:'assistant-stream', frame} (dsh-facts §18.13). */
+    frame?: unknown;
 }
 export interface SessionStreamer {
     stream(request: {
@@ -22,6 +24,24 @@ export interface SessionStreamer {
 export interface MuxBroadcaster {
     send(json: string): void;
 }
+/**
+ * 宿主线门控：follow 请求的 `assistantStream:true` 标志与随之而来的
+ * `{type:'assistant-stream'}` 流成员，在 0.2.x 线上经源码+实测双验证
+ * （dsh-api-session-controller types/history.js:179、index.js:1539；
+ * dsh-facts §18.13）。0.1.x 宿主对该标志的 schema 容忍度未验证，0.1.7 线
+ * 未验证——门控保守：仅 0.2 及以上开启；协议号回退（'0.0.1'）与无法解析
+ * 的版本一律视为不支持，保持该线上已验证的原请求形状。
+ */
+export declare const hostSupportsAssistantStream: (version: string) => boolean;
+/**
+ * 一个 opt-in 直播成员帧（0.2.x `{type:'assistant-stream', frame}` 的 frame）→
+ * 冻结的 0.1.x 持久事件形 `{type:'assistant/chunk', seq, data:{chunk}}`，装进老
+ * session/event 信封——manager 的 eventPayload case 'assistant/chunk'（chunkJson
+ * 词汇 text-delta/reasoning-delta/tool-call-delta/usage/finish）两代宿主同源
+ * （dsh-llm lib 实证），直通即可复活打字机。start/end 尝试生命周期帧无老 wire
+ * 对应 → null（不广播）。
+ */
+export declare const buildChunkFrame: (sessionId: string, frame: unknown, seq: number) => string | null;
 /** 老 mux 帧：server-request 信封 + session/event payload。 */
 export declare const buildEventFrame: (sessionId: string, event: unknown) => string;
 /**
@@ -37,10 +57,22 @@ export declare class FollowRegistry {
     private readonly streamer;
     private readonly broadcast;
     private readonly log;
+    /**
+     * 宿主支持 opt-in 直播流时（hostSupportsAssistantStream）follow 请求带
+     * `assistantStream:true`，泵把 `{type:'assistant-stream'}` 成员翻译回老
+     * assistant/chunk wire 形。false（默认）= 已验证线上一个字节都不多带。
+     */
+    private readonly assistantStream;
     private readonly streams;
     private readonly pumpLoops;
     private readonly pending;
-    constructor(streamer: SessionStreamer, broadcast: (json: string) => void, log: (line: string) => void);
+    constructor(streamer: SessionStreamer, broadcast: (json: string) => void, log: (line: string) => void, 
+    /**
+     * 宿主支持 opt-in 直播流时（hostSupportsAssistantStream）follow 请求带
+     * `assistantStream:true`，泵把 `{type:'assistant-stream'}` 成员翻译回老
+     * assistant/chunk wire 形。false（默认）= 已验证线上一个字节都不多带。
+     */
+    assistantStream?: boolean);
     /** 打开该会话的 follow 流并启动泵（幂等：含开流中的会话，防并发双开）。 */
     ensure(sessionId: string): void;
     private start;
