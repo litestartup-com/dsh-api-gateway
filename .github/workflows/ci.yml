@@ -74,6 +74,12 @@ jobs:
           done
           [ "$ok" = 1 ] || { echo "demo endpoints never came up"; exit 1; }
           curl -fsS "http://127.0.0.1:${PORT}/kb/api/tree" | grep -q 'content/docs/README.md'
+          # Regression guard: the pages are served under a mount prefix (/kb/, /cs/), so
+          # their JS must derive API paths from location.pathname — root-absolute /api/...
+          # falls into the fail-closed 404 (this exact bug shipped once and curl-level
+          # smokes cannot catch it: only the browser composes URLs from the page origin).
+          curl -fsS "http://127.0.0.1:${PORT}/kb/app.js" | grep -q 'location.pathname'
+          curl -fsS "http://127.0.0.1:${PORT}/cs/app.js" | grep -q 'location.pathname'
           code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/" --max-time 5)
           [ "$code" = 404 ] || { echo "front door must stay fail-closed: / returned $code"; exit 1; }
           echo DEMOS-OK

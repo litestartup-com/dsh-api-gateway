@@ -25,8 +25,13 @@ function toast(msg) {
   t._timer = setTimeout(() => t.classList.remove('show'), 2600)
 }
 
+// Served behind nginx under a mount prefix (/cs/): every API call must stay under it —
+// root-absolute /api/... would land in the front door's fail-closed 404. BASE is '' when
+// the BFF is opened directly (dev), so both topologies work.
+const BASE = location.pathname.replace(/\/+$/, '')
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
+  const res = await fetch(BASE + path, {
     headers: opts.body ? { 'content-type': 'application/json' } : undefined,
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -169,7 +174,7 @@ function renderQuestion(sid, rpcId, questions) {
 
 function openStream(sid) {
   if (state.es) { state.es.close(); state.es = null }
-  const es = new EventSource('/api/stream?sid=' + encodeURIComponent(sid))
+  const es = new EventSource(BASE + '/api/stream?sid=' + encodeURIComponent(sid))
   state.es = es
   es.addEventListener('status', (e) => {
     const { state: st } = JSON.parse(e.data)
