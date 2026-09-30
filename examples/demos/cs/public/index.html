@@ -5,17 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Support — ohdsh-api-facade</title>
 <link rel="stylesheet" href="./style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234176e6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7.9 20A9 9 0 1 0 4 16.1L2 22Z'/%3E%3C/svg%3E">
 </head>
 <body>
 <div class="cs-wrap">
   <header class="cs-head">
-    <div class="avatar">💬</div>
+    <div class="avatar"><span data-icon="message:22"></span></div>
     <div>
       <h1>ohdsh-api-facade Support</h1>
       <p class="sub">
-        Answers grounded in the project knowledge base
-        <span class="badge sandbox-ro"><span class="dot"></span>read-only sandbox</span>
+        Grounded in the project knowledge base
+        <span class="badge sandbox-ro"><span class="dot"></span>read-only</span>
       </p>
     </div>
     <div class="spacer"></div>
@@ -24,7 +24,7 @@
 
   <main class="cs-chat" id="chat">
     <div class="cs-welcome" id="welcome">
-      <div class="big">👋</div>
+      <div class="glyph"><span data-icon="message:30"></span></div>
       <h2>How can I help?</h2>
       <p>Ask me anything about deploying or using ohdsh-api-facade.</p>
       <div class="chips" id="chips">
@@ -39,15 +39,19 @@
   <footer class="cs-foot">
     <div class="composer">
       <textarea id="input" rows="1" placeholder="Type your question…"></textarea>
-      <button class="btn primary send" id="send">Send</button>
+      <button class="send" id="send" aria-label="Send"><span data-icon="arrow-up:18"></span></button>
     </div>
-    <div class="cs-disclaimer">AI support demo — answers are generated from the project docs and may be imperfect. <button class="btn ghost sm cs-newchat" id="newchat" hidden>New conversation</button></div>
+    <div class="cs-disclaimer">
+      <span>AI-generated answers from the project docs — may be imperfect.</span>
+      <button class="btn ghost sm cs-newchat" id="newchat" hidden><span data-icon="refresh:13"></span> New conversation</button>
+    </div>
   </footer>
 </div>
 
 <div id="toast"></div>
 <script src="./vendor/marked.min.js"></script>
 <script src="./vendor/purify.min.js"></script>
+<script src="./icons.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

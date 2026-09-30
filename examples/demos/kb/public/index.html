@@ -3,30 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KB Studio — ohdsh-api-facade demo</title>
+<title>KB Studio — ohdsh-api-facade</title>
 <link rel="stylesheet" href="./style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234176e6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z'/%3E%3Cpath d='M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z'/%3E%3C/svg%3E">
 </head>
 <body>
 <header class="kb-topbar">
-  <div class="brand"><span class="logo">📚</span> KB Studio</div>
+  <div class="brand">
+    <span class="logo"><span data-icon="book:17"></span></span>
+    KB Studio
+  </div>
   <span class="badge">ohdsh-api-facade</span>
   <span class="badge sandbox-write"><span class="dot"></span>workspace-write</span>
   <div class="spacer"></div>
-  <span class="conn" id="conn" title="agent event stream"><span class="dot" id="conn-dot"></span><span id="conn-text">connecting…</span></span>
-  <button class="btn" id="sync-btn" title="Re-sync content/docs from the repository">⟳ Refresh from repo</button>
-  <button class="btn primary" id="chat-toggle">✦ AI steward</button>
+  <span class="conn" id="conn" title="agent event stream"><span class="dot" id="conn-dot"></span><span id="conn-text">idle</span></span>
+  <button class="btn" id="sync-btn" title="Re-sync content/docs from the repository"><span data-icon="refresh:15"></span> Refresh from repo</button>
+  <button class="btn primary" id="chat-toggle"><span data-icon="sparkles:15"></span> AI steward</button>
 </header>
 
 <div class="kb-layout" id="layout">
   <aside class="kb-files">
     <div class="head">
-      <div class="row">
+      <div class="search-wrap">
+        <span data-icon="search:15"></span>
         <input class="search" id="search" type="search" placeholder="Filter files…">
       </div>
-      <div class="row">
-        <button class="btn sm" id="new-note" style="flex:1">＋ New note</button>
-      </div>
+      <button class="btn sm" id="new-note" style="justify-content:center"><span data-icon="plus:14"></span> New note</button>
     </div>
     <div class="kb-tree" id="tree"></div>
   </aside>
@@ -34,22 +36,23 @@
   <section class="kb-main">
     <div class="meta" id="meta" hidden>
       <span class="path" id="meta-path"></span>
-      <span class="badge synced" id="meta-synced" hidden>synced from repo</span>
+      <span class="badge brand" id="meta-synced" hidden>synced from repo</span>
       <div class="spacer"></div>
-      <button class="btn sm" id="edit-btn">✎ Edit</button>
-      <button class="btn sm danger" id="delete-btn">🗑 Delete</button>
+      <button class="btn sm" id="edit-btn"><span data-icon="pencil:13"></span> Edit</button>
+      <button class="btn sm danger" id="delete-btn"><span data-icon="trash:13"></span> Delete</button>
     </div>
     <div class="kb-viewer" id="viewer">
-      <div class="kb-empty"><div class="box">
-        <div class="big">📂</div>
-        <div>Select a file from the left, or ask the AI steward to draft one.</div>
+      <div class="kb-empty"><div class="empty-state">
+        <div class="glyph"><span data-icon="book:26"></span></div>
+        <h3>No file selected</h3>
+        <p>Pick a file from the library, or ask the AI steward to draft one.</p>
       </div></div>
     </div>
     <div class="kb-editor" id="editor" hidden>
       <div class="bar">
         <button class="btn primary sm" id="save-btn">Save</button>
         <button class="btn sm" id="cancel-edit">Cancel</button>
-        <div class="spacer" style="flex:1"></div>
+        <div class="spacer"></div>
         <span class="badge" id="edit-path"></span>
       </div>
       <textarea id="edit-area" spellcheck="false"></textarea>
@@ -58,18 +61,21 @@
 
   <aside class="kb-chat" id="chat">
     <div class="head">
-      <span>✦</span><span class="t">AI steward</span>
-      <span class="badge sandbox-write">workspace-write</span>
+      <span class="avatar"><span data-icon="sparkles:16"></span></span>
+      <div>
+        <div class="t">AI steward</div>
+        <div class="sub">drafts &amp; reorganizes the knowledge base</div>
+      </div>
       <div class="spacer"></div>
-      <button class="btn ghost sm" id="chat-close">✕</button>
+      <button class="btn ghost icon" id="chat-close" aria-label="Close chat"><span data-icon="x:16"></span></button>
     </div>
     <div class="msgs" id="chat-msgs"></div>
     <div class="foot">
       <div class="composer">
         <textarea id="chat-input" rows="1" placeholder="Ask the steward to draft or reorganize notes…"></textarea>
-        <button class="btn primary send" id="chat-send">Send</button>
+        <button class="send" id="chat-send" aria-label="Send"><span data-icon="arrow-up:17"></span></button>
       </div>
-      <div class="hint">tool approvals are auto-decided by this demo (the sandbox pin is the real guard)</div>
+      <div class="hint">tool approvals are auto-decided by this demo — the sandbox pin is the real guard</div>
     </div>
   </aside>
 </div>
@@ -77,6 +83,7 @@
 <div id="toast"></div>
 <script src="./vendor/marked.min.js"></script>
 <script src="./vendor/purify.min.js"></script>
+<script src="./icons.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

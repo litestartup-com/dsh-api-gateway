@@ -60,7 +60,7 @@ function renderTree() {
     else if (f.path.startsWith('content/notes/')) groups['content/notes'].push(f)
     else groups['(root)'].push(f)
   }
-  const labels = { 'content/docs': '📦 docs · synced from repo', 'content/notes': '🗒 notes · yours', '(root)': '' }
+  const labels = { 'content/docs': ['docs', 'synced from repo'], 'content/notes': ['notes', 'yours'], '(root)': null }
   const el = $('#tree')
   el.innerHTML = ''
   for (const [g, files] of Object.entries(groups)) {
@@ -68,14 +68,14 @@ function renderTree() {
     if (labels[g]) {
       const h = document.createElement('div')
       h.className = 'group'
-      h.textContent = labels[g]
+      h.innerHTML = `${icon('folder', 13)} ${labels[g][0]} <span class="tagline">· ${labels[g][1]}</span>`
       el.appendChild(h)
     }
     for (const f of files) {
       const row = document.createElement('div')
       row.className = 'file' + (state.current && state.current.path === f.path ? ' active' : '')
       const name = f.path.slice(f.path.startsWith(g + '/') ? g.length + 1 : (g === '(root)' ? 0 : f.path.lastIndexOf('/') + 1))
-      row.innerHTML = `<span class="ic">${f.path.endsWith('.md') ? '📄' : '🧩'}</span><span class="nm" title="${esc(f.path)}">${esc(name || f.path)}</span>`
+      row.innerHTML = `${/\.md$/i.test(f.path) ? icon('file-text', 15) : icon('file-code', 15)}<span class="nm" title="${esc(f.path)}">${esc(name || f.path)}</span>`
       row.onclick = () => openFile(f.path)
       el.appendChild(row)
     }
@@ -100,7 +100,7 @@ function renderViewer() {
   $('#meta-path').textContent = f.path
   $('#meta-synced').hidden = !f.synced
   const isMd = /\.md$/i.test(f.path)
-  $('#viewer').innerHTML = `<div class="paper ${isMd ? 'md' : ''}">${isMd ? renderMd(f.content) : `<pre style="background:none;color:inherit;padding:0"><code>${esc(f.content)}</code></pre>`}</div>`
+  $('#viewer').innerHTML = `<div class="paper ${isMd ? 'md' : 'plain'}">${isMd ? renderMd(f.content) : `<pre><code>${esc(f.content)}</code></pre>`}</div>`
 }
 
 function startEdit() {
@@ -132,7 +132,7 @@ async function deleteCurrent() {
     await api('/api/file?path=' + encodeURIComponent(state.current.path), { method: 'DELETE' })
     state.current = null
     $('#meta').hidden = true
-    $('#viewer').innerHTML = '<div class="kb-empty"><div class="box"><div class="big">🗑</div><div>Deleted.</div></div></div>'
+    $('#viewer').innerHTML = `<div class="kb-empty"><div class="empty-state"><div class="glyph">${icon('inbox', 26)}</div><h3>File deleted</h3></div></div>`
     toast('Deleted')
     loadTree()
   } catch (e) { toast(e.message) }
@@ -194,11 +194,10 @@ function toolLabel(name, args) {
     const a = JSON.parse(args || '{}')
     target = a.file_path ?? a.path ?? a.pattern ?? (a.command ? String(a.command).slice(0, 60) : '')
   } catch { /* keep empty */ }
-  const icons = { read: '📖', grep: '🔎', glob: '📂', write: '✍️', edit: '✍️', pwsh: '⚙️', bash: '⚙️' }
+  const icons = { read: 'file-text', grep: 'search', glob: 'folder', write: 'pencil', edit: 'pencil', pwsh: 'activity', bash: 'activity' }
   const verbs = { read: 'Reading', grep: 'Searching', glob: 'Browsing', write: 'Writing', edit: 'Editing', pwsh: 'Running', bash: 'Running' }
-  const ic = icons[name] ?? '🔧'
   const verb = verbs[name] ?? name
-  return `${ic} ${esc(verb)}${target ? ` <code>${esc(String(target))}</code>` : ''} …`
+  return `${icon(icons[name] ?? 'activity', 14)} <span>${esc(verb)}${target ? ` <code>${esc(String(target))}</code>` : ''}…</span>`
 }
 
 function startStreamBubble() {
@@ -247,11 +246,11 @@ function renderQuestion(sid, rpcId, questions) {
   const q = questions[0] ?? {}
   const multi = q.multi_select === true
   card.innerHTML = `
-    <div class="q-head">✦ The steward is asking${questions.length > 1 ? ` (${questions.length} questions — answering the first)` : ''}</div>
-    ${q.header ? `<div class="q-head" style="text-transform:none;color:var(--muted)">${esc(q.header)}</div>` : ''}
+    <div class="q-head">${icon('sparkles', 14)} The steward is asking${questions.length > 1 ? ` · ${questions.length} questions, answering the first` : ''}</div>
+    ${q.header ? `<div class="q-sub">${esc(q.header)}</div>` : ''}
     <div class="q-text">${esc(q.question ?? '')}</div>
     <div class="q-opts"></div>
-    <div class="q-free"><input placeholder="Or type a custom answer…"><button class="btn sm">Send</button></div>
+    <div class="q-free"><input placeholder="Or type a custom answer…"><button class="btn sm primary">Send</button></div>
     <div class="q-foot"><button class="q-cancel">cancel this question</button></div>`
   const opts = card.querySelector('.q-opts')
   const picked = new Set()
@@ -318,10 +317,10 @@ function openStream(sid) {
     scrollChat()
   })
   es.addEventListener('tool_call', (e) => { const d = JSON.parse(e.data); addActivity('', toolLabel(d.name, d.args)) })
-  es.addEventListener('tool_result', (e) => { const d = JSON.parse(e.data); if (d.isError) addActivity('err', `⚠ tool error: <code>${esc((d.text || '').slice(0, 120))}</code>`) })
+  es.addEventListener('tool_result', (e) => { const d = JSON.parse(e.data); if (d.isError) addActivity('err', `${icon('alert', 14)} <span>tool error: <code>${esc((d.text || '').slice(0, 120))}</code></span>`) })
   es.addEventListener('approval', (e) => {
     const d = JSON.parse(e.data)
-    addActivity('shield', `🛡 auto-approved <code>${esc(d.toolName)}</code>${d.reason ? ` — ${esc(String(d.reason).slice(0, 90))}` : ''}`)
+    addActivity('shield', `${icon('shield-check', 14)} <span>auto-approved <code>${esc(d.toolName)}</code>${d.reason ? ` — ${esc(String(d.reason).slice(0, 90))}` : ''}</span>`)
   })
   es.addEventListener('question', (e) => { const d = JSON.parse(e.data); renderQuestion(sid, d.rpcId, d.questions) })
   es.addEventListener('question_resolved', (e) => {
@@ -359,7 +358,7 @@ async function sendChat() {
       openStream(r.sid)
     } else if (!state.es) openStream(r.sid)
     startStreamBubble()
-    addActivity('', '<span class="typing" style="padding:0"><i></i><i></i><i></i></span> working…')
+    addActivity('', '<span class="typing" style="padding:2px 0"><i></i><i></i><i></i></span> <span>working…</span>')
   } catch (e) {
     addMsg('system', esc(e.message))
   }
@@ -402,5 +401,6 @@ $('#chat-input').addEventListener('input', function () {
   this.style.height = Math.min(this.scrollHeight, 160) + 'px'
 })
 
+hydrateIcons()
 loadTree().catch((e) => toast(`tree load failed: ${e.message}`))
 loadTranscript()

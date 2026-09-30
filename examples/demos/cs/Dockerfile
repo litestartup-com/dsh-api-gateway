@@ -11,6 +11,7 @@ COPY examples/demos/seed/cs /app/cs/seed
 COPY examples/demos/cs/server.mjs /app/cs/server.mjs
 COPY examples/demos/cs/public /app/cs/public
 COPY examples/demos/web/style.css /app/cs/public/style.css
+COPY examples/demos/web/icons.js /app/cs/public/icons.js
 COPY examples/demos/web/vendor /app/cs/public/vendor
 
 ENV NODE_ENV=production

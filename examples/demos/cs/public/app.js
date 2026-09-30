@@ -72,10 +72,10 @@ function toolLabel(name, args) {
     target = a.pattern ?? a.file_path ?? a.path ?? ''
     target = String(target).replace('/workspace/kb/', '')
   } catch { /* keep empty */ }
-  if (name === 'grep') return `🔎 Searching the knowledge base${target ? ` for <code>${esc(target)}</code>` : ''} …`
-  if (name === 'read') return `📖 Reading <code>${esc(target || '…')}</code>`
-  if (name === 'glob') return `📂 Browsing the knowledge base …`
-  return `🔧 ${esc(name)}${target ? ` <code>${esc(target)}</code>` : ''} …`
+  if (name === 'grep') return `${icon('search', 14)} <span>Searching the knowledge base${target ? ` for <code>${esc(target)}</code>` : ''}…</span>`
+  if (name === 'read') return `${icon('file-text', 14)} <span>Reading <code>${esc(target || '…')}</code></span>`
+  if (name === 'glob') return `${icon('folder', 14)} <span>Browsing the knowledge base…</span>`
+  return `${icon('activity', 14)} <span>${esc(name)}${target ? ` <code>${esc(target)}</code>` : ''}…</span>`
 }
 
 function startStreamBubble() {
@@ -122,11 +122,11 @@ function renderQuestion(sid, rpcId, questions) {
   const q = questions[0] ?? {}
   const multi = q.multi_select === true
   card.innerHTML = `
-    <div class="q-head">💬 The assistant would like to clarify</div>
-    ${q.header ? `<div class="q-head" style="text-transform:none;color:var(--muted)">${esc(q.header)}</div>` : ''}
+    <div class="q-head">${icon('message', 14)} The assistant would like to clarify</div>
+    ${q.header ? `<div class="q-sub">${esc(q.header)}</div>` : ''}
     <div class="q-text">${esc(q.question ?? '')}</div>
     <div class="q-opts"></div>
-    <div class="q-free"><input placeholder="Or type your answer…"><button class="btn sm">Send</button></div>
+    <div class="q-free"><input placeholder="Or type your answer…"><button class="btn sm primary">Send</button></div>
     <div class="q-foot"><button class="q-cancel">skip this question</button></div>`
   const opts = card.querySelector('.q-opts')
   const picked = new Set()
@@ -191,11 +191,11 @@ function openStream(sid) {
     scroll()
   })
   es.addEventListener('tool_call', (e) => { const d = JSON.parse(e.data); addActivity('', toolLabel(d.name, d.args)) })
-  es.addEventListener('tool_result', (e) => { const d = JSON.parse(e.data); if (d.isError) addActivity('err', `⚠ <code>${esc((d.text || '').slice(0, 120))}</code>`) })
+  es.addEventListener('tool_result', (e) => { const d = JSON.parse(e.data); if (d.isError) addActivity('err', `${icon('alert', 14)} <span><code>${esc((d.text || '').slice(0, 120))}</code></span>`) })
   es.addEventListener('approval', (e) => {
     const d = JSON.parse(e.data)
-    if (String(d.outcome).startsWith('rejected')) addActivity('blocked', `🛡 blocked a <code>${esc(d.toolName)}</code> attempt — this assistant is read-only`)
-    else addActivity('shield', `🛡 ${esc(String(d.outcome))} <code>${esc(d.toolName)}</code>`)
+    if (String(d.outcome).startsWith('rejected')) addActivity('blocked', `${icon('shield-x', 14)} <span>blocked a <code>${esc(d.toolName)}</code> attempt — this assistant is read-only</span>`)
+    else addActivity('shield', `${icon('shield-check', 14)} <span>${esc(String(d.outcome))} <code>${esc(d.toolName)}</code></span>`)
   })
   es.addEventListener('question', (e) => { const d = JSON.parse(e.data); renderQuestion(sid, d.rpcId, d.questions) })
   es.addEventListener('question_resolved', (e) => {
@@ -233,7 +233,7 @@ async function send(text) {
       openStream(r.sid)
     } else if (!state.es) openStream(r.sid)
     startStreamBubble()
-    addActivity('', '<span class="typing" style="padding:0"><i></i><i></i><i></i></span> consulting the knowledge base…')
+    addActivity('', '<span class="typing" style="padding:2px 0"><i></i><i></i><i></i></span> <span>consulting the knowledge base…</span>')
   } catch (e) {
     addMsg('system', esc(e.message))
     state.busy = false
@@ -270,4 +270,5 @@ $('#newchat').onclick = () => {
   location.reload()
 }
 
+hydrateIcons()
 loadTranscript()

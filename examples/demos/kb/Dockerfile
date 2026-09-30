@@ -16,6 +16,7 @@ COPY examples/demos/seed/kb /app/kb/seed
 COPY examples/demos/kb/server.mjs /app/kb/server.mjs
 COPY examples/demos/kb/public /app/kb/public
 COPY examples/demos/web/style.css /app/kb/public/style.css
+COPY examples/demos/web/icons.js /app/kb/public/icons.js
 COPY examples/demos/web/vendor /app/kb/public/vendor
 
 ENV NODE_ENV=production
