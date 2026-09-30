@@ -43,17 +43,21 @@ semver-declared:
 > this in their version matrix (`dsh-agent-manager` `src/dsh-matrix.ts`,
 > `needsLegacyPeerDeps`). The same posture applies to the 0.2.0 line.
 
-> **0.2.0 corridor note** (what facade 0.2.4 absorbs, so clients don't have to):
-> the host's `wireStream.open` grew duplex uplink/peer parameters (arity-based
-> detection keeps one code path booting both host generations);
+> **0.2.0 corridor note** (what facades 0.2.4/0.2.5 absorb, so clients don't
+> have to): the host's `wireStream.open` grew duplex uplink/peer parameters
+> (arity-based detection keeps one code path booting both host generations);
 > `ctx.settings.register` is gone host-side, so the durable key path on 0.2.0
 > hosts is the **composition config** (the Docker stack's entrypoint injects
 > `GW_KEY` into the profile patch; `POST {prefix}/key` bootstrap keys are
 > memory-only there); session logs moved to V4 (V3 volumes are migrated on
-> read — one-way, back up before upgrading); and the DeepSeek session-log
+> read — one-way, back up before upgrading); the DeepSeek session-log
 > upload defaults to **on** (the Docker stack pins it off in the profile
-> patch). The wire contract itself is unchanged — managers and probes pinned to
-> older facade commits keep working against 0.2.0 hosts through this facade.
+> patch); and streaming deltas moved out of the durable log into an opt-in
+> live channel — since 0.2.5 the facade subscribes to it and re-emits the
+> frozen `assistant/chunk` frames, so typewriter clients keep streaming with
+> zero changes. The wire contract itself is unchanged — managers and probes
+> pinned to older facade commits keep working against 0.2.0 hosts through
+> this facade.
 
 Consumers pin the facade **by commit**
 (`github:litestartup-com/dsh-api-gateway#<sha>`), so each DSH line is

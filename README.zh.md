@@ -34,13 +34,15 @@ semver 声明：
 > （`dsh-agent-manager` `src/dsh-matrix.ts` 的 `needsLegacyPeerDeps`）。
 > 0.2.0 线同样适用此姿态。
 
-> **0.2.0 走廊说明**（门面 0.2.4 吸收的差异，客户端零改动）：宿主
+> **0.2.0 走廊说明**（门面 0.2.4/0.2.5 吸收的差异，客户端零改动）：宿主
 > `wireStream.open` 增加了 duplex uplink/peer 参数（按函数元数探测，一份代码
 > 双代宿主通吃）；宿主侧 `ctx.settings.register` 已删除，0.2.0 宿主的持久密钥
 > 路径改走**组合配置**（Docker 栈 entrypoint 把 `GW_KEY` 注入 profile patch；
 > 此时 `POST {prefix}/key` 自助发放的密钥仅存内存）；会话日志升到 V4（V3 卷
 > 读取时单向迁移——升级前先备份）；DeepSeek 会话日志上传默认**开启**（Docker
-> 栈在 profile patch 里显式钉关）。对外 wire 契约本身不变——钉在旧门面提交上的
+> 栈在 profile patch 里显式钉关）；流式增量移出持久日志、改为 opt-in 直播通道
+> ——0.2.5 起门面订阅该通道，并按冻结的 `assistant/chunk` 帧形重新广播，
+> 打字机客户端零改动继续流式。对外 wire 契约本身不变——钉在旧门面提交上的
 > manager 等消费者经本门面访问 0.2.0 宿主零改动。
 
 消费方按**提交**钉版（`github:litestartup-com/dsh-api-gateway#<sha>`），每条 DSH
