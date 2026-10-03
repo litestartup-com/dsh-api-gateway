@@ -2,7 +2,7 @@
 // JSON responses, bounded body reads, SSE channels with heartbeat, static file serving
 // with a path-traversal guard.
 import { createReadStream, statSync } from 'node:fs'
-import { join, normalize, resolve, extname } from 'node:path'
+import { join, normalize, resolve, extname, sep } from 'node:path'
 
 export function sendJson(res, status, obj) {
   const body = JSON.stringify(obj)
@@ -32,7 +32,9 @@ export function safeJoin(root, rel) {
   if (typeof rel !== 'string' || rel === '') return null
   const abs = resolve(root, normalize(rel).replace(/^([/\\])+/, ''))
   const rootAbs = resolve(root)
-  if (abs !== rootAbs && !abs.startsWith(rootAbs + '/')) return null
+  // Platform separator: on Windows resolve() yields backslashes, and a
+  // hardcoded '/' made every legitimate path look like a traversal.
+  if (abs !== rootAbs && !abs.startsWith(rootAbs + sep)) return null
   return abs
 }
 
