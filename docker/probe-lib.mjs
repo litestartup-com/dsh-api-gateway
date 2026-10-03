@@ -39,7 +39,16 @@ export const PREFIX = '/api-gw/v1'
 let checks = 0
 export const passed = () => checks
 export const log = (msg) => console.log('[' + (process.env.PROBE_TAG || 'probe') + '] ' + msg)
-export const fail = (msg) => { console.error('[' + (process.env.PROBE_TAG || 'probe') + '] FAIL: ' + msg); process.exit(1) }
+export const fail = (msg) => {
+  console.error('[' + (process.env.PROBE_TAG || 'probe') + '] FAIL: ' + msg)
+  // Job logs need a login to read; check-run annotations are public. When a
+  // probe fails under GitHub Actions, surface the reason as an annotation so
+  // the failure is diagnosable from the API alone.
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    console.log('::error title=' + (process.env.PROBE_TAG || 'probe') + '-failure::' + msg.replace(/[\r\n]+/g, ' | ').slice(0, 1400))
+  }
+  process.exit(1)
+}
 export async function step(name, fn) {
   log('-- ' + name)
   try { await fn(); checks++ } catch (e) { fail(name + ': ' + (e && e.message ? e.message : String(e))) }

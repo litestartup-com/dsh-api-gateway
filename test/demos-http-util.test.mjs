@@ -19,14 +19,22 @@ test('safeJoin resolves a plain relative path under the root', () => {
   assert.equal(abs, join(root, 'file.md'))
 })
 
-test('safeJoin resolves nested relative paths (both separator styles)', () => {
+test('safeJoin resolves nested relative paths (both separator styles on Windows)', () => {
   assert.equal(safeJoin(root, 'a/b.md'), join(root, 'a', 'b.md'))
-  assert.equal(safeJoin(root, 'a\\b.md'), join(root, 'a', 'b.md'))
+  if (sep === '\\') {
+    // Windows normalizes backslash separators into real path segments.
+    assert.equal(safeJoin(root, 'a\\b.md'), join(root, 'a', 'b.md'))
+  } else {
+    // POSIX: a backslash is an ordinary filename character, still contained.
+    assert.equal(safeJoin(root, 'a\\b.md'), join(root, 'a\\b.md'))
+  }
 })
 
 test('safeJoin strips leading slashes without escaping the root', () => {
   assert.equal(safeJoin(root, '/file.md'), join(root, 'file.md'))
-  assert.equal(safeJoin(root, '\\file.md'), join(root, 'file.md'))
+  if (sep === '\\') {
+    assert.equal(safeJoin(root, '\\file.md'), join(root, 'file.md'))
+  }
 })
 
 test('safeJoin rejects traversal and absolute escapes', () => {

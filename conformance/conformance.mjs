@@ -72,11 +72,15 @@ await step('envelope/path method mismatch is rejected (400)', async () => {
   if (res.status !== 400) throw new Error(`expected 400, got ${res.status}`)
 })
 
-await step('host.describe: version string + allowFullAccess boolean', async () => {
+await step('host.describe: version string + optional allowFullAccess boolean', async () => {
   const value = await rpc('host.describe', {})
   if (typeof value?.version !== 'string' || value.version === '') throw new Error(`version missing: ${JSON.stringify(value).slice(0, 160)}`)
-  if (typeof value?.allowFullAccess !== 'boolean') throw new Error(`allowFullAccess not boolean: ${JSON.stringify(value).slice(0, 160)}`)
-  log(`host.describe: version=${value.version} allowFullAccess=${value.allowFullAccess}`)
+  // allowFullAccess is informational: the contract lets hosts omit it (absent =
+  // the danger tier is simply not offerable), so only its TYPE is invariant.
+  if (value?.allowFullAccess !== undefined && typeof value.allowFullAccess !== 'boolean') {
+    throw new Error(`allowFullAccess not boolean: ${JSON.stringify(value).slice(0, 160)}`)
+  }
+  log(`host.describe: version=${value.version} allowFullAccess=${value.allowFullAccess ?? '(absent)'}`)
 })
 
 await step('session.models returns a catalog envelope', async () => {
@@ -130,8 +134,11 @@ await step('session.history is structurally sound', async () => {
   const value = await rpc('session.history', { sessionId })
   if (!Array.isArray(value?.events)) throw new Error('events missing')
   if (typeof value?.hasMore !== 'boolean') throw new Error('hasMore missing')
-  if (value?.projections !== undefined) {
-    if (typeof value.projections !== 'object' || value.projections === null) throw new Error('projections must be an object')
+  // projections may be absent or null on a fresh session (host-dependent);
+  // when present as an object it must carry a values object.
+  if (value?.projections !== undefined && value?.projections !== null) {
+    if (typeof value.projections !== 'object') throw new Error('projections must be an object or null')
+    if (value.projections.values !== undefined && typeof value.projections.values !== 'object') throw new Error('projections.values must be an object')
   }
 })
 
