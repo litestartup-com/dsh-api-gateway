@@ -199,7 +199,7 @@ export class ChatBridge {
         return this.#emit(sid, 'tool_call', { name: String(data.name ?? ''), args: truncate(String(data.arguments ?? ''), 400) })
       case 'tool/result': {
         const block = Array.isArray(data.message?.content) ? data.message.content[0] : null
-        return this.#emit(sid, 'tool_result', { isError: Boolean(data.error || block?.isError), text: truncate(String(block?.content ?? ''), 300) })
+        return this.#emit(sid, 'tool_result', { isError: Boolean(data.error || block?.isError), text: truncate(blocksText(block?.content), 300) })
       }
       case 'turn/start':
         return this.#emit(sid, 'turn_start', {})
