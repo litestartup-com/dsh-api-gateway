@@ -52,6 +52,12 @@ jobs:
         run: docker compose up -d --wait --timeout 420
       - name: Stack smoke (wiring only)
         run: node docker/smoke.mjs
+      # Cross-implementation conformance: the same suite the pi-api-facade CI
+      # runs against the Pi facade — engine-agnostic contract assertions only.
+      - name: Conformance kit (frozen-contract intersection)
+        run: |
+          mkdir -p workspaces/conformance
+          node conformance/conformance.mjs
       # Web demos (examples/demos): boot the compose overlay on top of the running
       # stack and check the BFF wiring — pages, health, seeded tree. Model turns are
       # not exercised in CI (no key); the live-host verification covers those.

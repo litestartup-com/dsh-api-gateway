@@ -137,6 +137,11 @@ export function wsOpen(wsUrl, headers = {}, timeoutMs = 10_000) {
       host: u.hostname,
       port: u.port || 80,
       path: u.pathname + u.search,
+      // Never reuse a pooled keep-alive socket for an upgrade request: after a
+      // refused handshake (e.g. a 401 probe) the server may close the pooled
+      // connection, and the next upgrade on that dead socket dies with
+      // ECONNRESET before any response. Upgrade handshakes get a fresh socket.
+      agent: false,
       headers: {
         Connection: 'Upgrade', Upgrade: 'websocket',
         'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': key,
