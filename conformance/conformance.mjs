@@ -45,10 +45,14 @@ await step('health is open (no auth) and reports status ok', async () => {
   if (body.status !== undefined && body.status !== 'ok') throw new Error(`status=${body.status}`)
 })
 
-await step('missing key is 401 and the body never carries the DSH provisioning hint', async () => {
+await step('missing key is 401', async () => {
+  // Note: the 401 BODY is deliberately not asserted. This facade's provisioning
+  // flow advertises itself in the 401 ("POST /key provisions a key…"), while
+  // pi-api-facade (provisioning disabled) must never carry that string — the
+  // manager retries provisioning on it. That hardening is asserted in the pi
+  // repo's own suite, not here.
   const res = await post(PREFIX + '/proxy/session.list', { type: 'client-request', rpcId: 'conf-1', method: 'session.list', payload: {} })
   if (res.status !== 401) throw new Error(`expected 401, got ${res.status}`)
-  if (res.text.includes('provisions a key')) throw new Error('401 body carries the provisioning hint (would trigger manager retries)')
 })
 
 await step('wrong key is 401', async () => {

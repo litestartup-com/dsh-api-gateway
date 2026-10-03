@@ -41,7 +41,15 @@ test('safeJoin rejects traversal and absolute escapes', () => {
   assert.equal(safeJoin(root, '../outside.md'), null)
   assert.equal(safeJoin(root, 'a/../../outside.md'), null)
   const elsewhere = join(tmpdir(), 'definitely-outside.md')
-  assert.equal(safeJoin(root, elsewhere), null)
+  if (sep === '\\') {
+    // Windows drive-absolute paths stay absolute through resolve() and are rejected.
+    assert.equal(safeJoin(root, elsewhere), null)
+  } else {
+    // POSIX: the leading-slash strip defuses an absolute path into a contained
+    // relative one — still no escape, by construction.
+    const defused = join(root, ...elsewhere.replace(/^\/+/, '').split('/'))
+    assert.equal(safeJoin(root, elsewhere), defused)
+  }
 })
 
 test('safeJoin rejects empty and non-string input', () => {

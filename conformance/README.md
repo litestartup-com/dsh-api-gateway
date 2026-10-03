@@ -27,9 +27,11 @@ SMOKE_BASE=http://127.0.0.1:8090 SMOKE_KEY=<api-key> node conformance/conformanc
 
 ## What it asserts
 
-Carrier level: health open; missing/wrong key 401 **without** the DSH
-provisioning hint (the manager retries on that string); whitelist fail-closed
-403; malformed envelope and envelope/path method mismatch are non-200.
+Carrier level: health open; missing/wrong key 401 (the body is NOT asserted —
+this facade's provisioning flow advertises `POST /key` in its 401 while
+pi-api-facade must never carry that hint; each repo asserts its own body
+policy); whitelist fail-closed 403; malformed envelope and envelope/path
+method mismatch are non-200.
 
 Envelope level: `host.describe` version + `allowFullAccess`; `session.models`
 catalog shape; create/list/history/pending/respond receipts; sandbox-mode
