@@ -115,7 +115,9 @@ curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
 | --- | --- | --- |
 | `HTTP_PORT` | `80` | nginx 对外端口（v1 为纯 HTTP，TLS 未接线） |
 | `GW_KEY` | 生成 | 门面静态 API 密钥（`X-API-Key`）。留空则一次性 `POST /key` 自助发放通道保持开放——公网不建议 |
-| `DEEPSEEK_API_KEY` | — | 模型凭据；真实会话回合必需 |
+| `DEEPSEEK_API_KEY` | — | DeepSeek 官方路由凭据；未配置下方 OpenAI 兼容路由时真实回合必需 |
+| `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | — | 可选：三项齐设即启用 OpenAI 兼容路由并成为新会话默认（见下节） |
+| `OPENAI_ROUTE` / `OPENAI_API` / `OPENAI_MODEL_NAME` / `OPENAI_MODEL_CONTEXT_WINDOW` / `OPENAI_MODEL_MAX_TOKENS` | 见 `.env.example` | 可选：该路由的精调项 |
 | `DSH_VERSION` | `0.2.0-rc.2` | 烘进镜像的 DSH 钉版线（需有对应的 `docker/profile-lock/` 锁文件；`0.1.5-rc.2` 仍在支持范围） |
 | `NGINX_IMAGE` | `nginx:alpine` | alpine 拉不动时覆盖（如 `docker.m.daocloud.io/library/nginx:alpine`） |
 | `NODE_IMAGE` / `NPM_REGISTRY` | docker.io / npmjs | 构建期镜像源（国内构建） |
@@ -131,6 +133,41 @@ curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
 下的路径（如 `/workspace/my-project`）——同一棵树在宿主上就是
 `./workspaces/my-project`。DSH 状态（settings、凭据、会话日志）存于命名卷
 `gateway-data`，`docker compose down` 不丢；`down -v` 才会清空。
+
+### OpenAI 兼容 LLM 路由
+
+节点镜像自带 DSH 内置的 `llm-pi-ai` 适配器（pi-ai 多提供方桥）。在 `.env` 里设齐
+三个 `OPENAI_*` 变量，entrypoint 就会在 profile 组合里**声明**一条提供方路由并把
+新会话默认指过去——不用重建镜像，一次 `docker compose up -d` 生效：
+
+```bash
+# .env —— 任意 OpenAI 兼容端点（OpenAI、DeepSeek 的 /v1、vLLM、OneAPI……）
+OPENAI_BASE_URL=https://api.openai.com/v1   # 到 /chat/completions 之前的前缀（通常含 /v1）
+OPENAI_API_KEY=***
+OPENAI_MODEL=gpt-4o-mini
+```
+
+```bash
+docker compose up -d                        # 重建 gateway 容器；配置在启动时再生成
+node docker/smoke.mjs --model --provider openai-compat   # 断言回合确实走了该路由
+```
+
+行为事实（源码实证；内部设计库 `dsh-facts §19`）：
+
+- **声明式路由**（pi-ai 目录没有的键）必须自己拼齐协议、端点与模型清单：
+  `OPENAI_API` 默认 `openai-completions`（OpenAI Chat Completions；pi-ai 另有
+  `openai-responses`、`anthropic-messages`、`google-vertex` 等）。容量声明是配置方
+  的义务——没有谁会去盘问一个网关：`OPENAI_MODEL_CONTEXT_WINDOW`（默认 262144）与
+  `OPENAI_MODEL_MAX_TOKENS`（默认 32768）给目录未描述的模型定尺寸。
+- 密钥不落任何配置文件：profile 里存的是 `apiKeyEnv: OPENAI_API_KEY`，DSH 凭据层
+  每次请求从进程环境解析（环境变量是最高层）。
+- DeepSeek 官方适配器保持挂载：两条路由都出现在 `session.models`，
+  `session.selectModel` 可把单个会话钉到任一路由。三变量不设 = 现状不变，
+  `DEEPSEEK_API_KEY` 仍是默认路径——既有部署零变化。
+- `OPENAI_ROUTE`（默认 `openai-compat`）即路由键：`session.models` 与
+  `request/header` 事件里的 `provider` 值。
+- 需要 0.2.x DSH 线（栈默认）。legacy `0.1.2`/`0.1.5` 镜像忽略 `OPENAI_*`
+  并在启动时告警。
 
 ### 升级与锁刷新
 

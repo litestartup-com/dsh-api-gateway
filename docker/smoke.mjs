@@ -10,6 +10,8 @@
 //   node docker/smoke.mjs --base http://host:port --key apigw-xxx
 //   node docker/smoke.mjs --skip-front          # when pointed directly at the gateway
 //                                               # port instead of the nginx front door
+//   node docker/smoke.mjs --model --provider openai-compat
+//                                               # assert which LLM route served the turn
 //
 // Checks (wiring): health open + upstream ok -> front door fail-closed (GET / = 404)
 //   -> wrong key 401 -> whitelist 403 (credentials.set) -> host.describe envelope
@@ -21,7 +23,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  BASE, KEY, PREFIX, REPO_ROOT, hasFlag, isMain,
+  BASE, KEY, PREFIX, REPO_ROOT, argVal, hasFlag, isMain,
   log, step, passed, requireKey,
   post, rpc, getHealth, wsOpen, muxUrl, evOf, typeOf, waitTurnEnd,
 } from './probe-lib.mjs'
@@ -131,6 +133,15 @@ if (isMain(import.meta.url)) {
       if (!events.some((e) => typeOf(e) === 'assistant/message')) throw new Error('turn ended without any assistant/message event')
       const reply = events.map(evOf).find((ev) => ev?.type === 'assistant/message')
       log(`turn/end: reason=${evOf(turnEnd)?.data?.reason?.kind ?? '?'}; assistant reply: ${JSON.stringify(reply?.data?.message?.content ?? null).slice(0, 120)}`)
+      // Which LLM route actually served the turn (request/header event evidence).
+      // --provider <route> turns the log line into an assertion (e.g. openai-compat).
+      const header = events.map(evOf).find((ev) => ev?.type === 'request/header')
+      const route = header?.data?.header?.config
+      log(`llm route: provider=${route?.provider ?? '?'} model=${route?.model ?? '?'}`)
+      const expectProvider = argVal('--provider')
+      if (expectProvider !== undefined && route?.provider !== expectProvider) {
+        throw new Error(`expected provider ${expectProvider}, got ${route?.provider ?? '?'}`)
+      }
       if (mux !== null) {
         const collect = () => {
           const texts = []

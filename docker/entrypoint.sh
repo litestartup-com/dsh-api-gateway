@@ -48,6 +48,10 @@ fi
 # a `0.1.5.*` pattern silently misses it and routes the legacy line down the new path.
 case "${DSH_VERSION:-}" in
 0.1.2-* | 0.1.2.* | 0.1.5-* | 0.1.5.*)
+  if [[ -n "${OPENAI_BASE_URL:-}${OPENAI_API_KEY:-}${OPENAI_MODEL:-}" ]]; then
+    echo "[entrypoint] WARNING: OPENAI_* is not wired on the legacy DSH line (${DSH_VERSION:-unknown}) --"
+    echo "[entrypoint]          the OpenAI-compatible route ships with the 0.2.x default line only."
+  fi
   if [[ -n "${GW_KEY:-}" ]]; then
     NEED_WRITE=1
     if [ -f "$DSH_HOME/settings.yaml" ]; then
@@ -86,19 +90,58 @@ case "${DSH_VERSION:-}" in
   ;;
 *)
   PATCH_FILE="$DSH_HOME/profiles/$PROFILE_NAME/cordis.patch.yml"
-  if [[ -n "${GW_KEY:-}${GW_ADMIN_KEY:-}${GW_ALLOW_FULL_ACCESS:-}${GW_EXPOSE_ERRORS:-}${GW_CORS_ORIGIN:-}" ]]; then
+  HAVE_GW=0
+  if [[ -n "${GW_KEY:-}${GW_ADMIN_KEY:-}${GW_ALLOW_FULL_ACCESS:-}${GW_EXPOSE_ERRORS:-}${GW_CORS_ORIGIN:-}" ]]; then HAVE_GW=1; fi
+  # OpenAI-compatible LLM route (opt-in): the built-in pi-ai adapter row (llm-pi-ai)
+  # ships dormant in the base bundle; a DECLARED route (a providers key the pi-ai
+  # catalog does not know) must spell out api + baseURL + models, and apiKeyEnv names
+  # the container env var the credentials layer resolves per request (process env is
+  # its top layer). All three OPENAI_ vars are required -- a partial set is ignored
+  # loudly rather than half-configured.
+  HAVE_LLM=0
+  if [[ -n "${OPENAI_BASE_URL:-}" && -n "${OPENAI_API_KEY:-}" && -n "${OPENAI_MODEL:-}" ]]; then
+    HAVE_LLM=1
+  elif [[ -n "${OPENAI_BASE_URL:-}${OPENAI_API_KEY:-}${OPENAI_MODEL:-}" ]]; then
+    echo "[entrypoint] WARNING: OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL must ALL be set"
+    echo "[entrypoint]          to enable the OpenAI-compatible route -- partial config ignored."
+  fi
+  if [ "$HAVE_GW" = 1 ] || [ "$HAVE_LLM" = 1 ]; then
     {
       cat /opt/api-profile/cordis.patch.yml
-      echo '- id: ohdsh-api-facade'
-      echo '  config:'
-      if [[ -n "${GW_KEY:-}" ]]; then echo "    apiKeys: ['$GW_KEY']"; fi
-      if [[ -n "${GW_ADMIN_KEY:-}" ]]; then echo "    adminKey: '$GW_ADMIN_KEY'"; fi
-      if [[ "${GW_ALLOW_FULL_ACCESS:-}" == "true" ]]; then echo '    allowFullAccess: true'; fi
-      if [[ -n "${GW_EXPOSE_ERRORS:-}" ]]; then echo "    exposeErrors: $GW_EXPOSE_ERRORS"; fi
-      if [[ -n "${GW_CORS_ORIGIN:-}" ]]; then echo "    corsOrigin: '$GW_CORS_ORIGIN'"; fi
+      if [ "$HAVE_GW" = 1 ]; then
+        echo '- id: ohdsh-api-facade'
+        echo '  config:'
+        if [[ -n "${GW_KEY:-}" ]]; then echo "    apiKeys: ['$GW_KEY']"; fi
+        if [[ -n "${GW_ADMIN_KEY:-}" ]]; then echo "    adminKey: '$GW_ADMIN_KEY'"; fi
+        if [[ "${GW_ALLOW_FULL_ACCESS:-}" == "true" ]]; then echo '    allowFullAccess: true'; fi
+        if [[ -n "${GW_EXPOSE_ERRORS:-}" ]]; then echo "    exposeErrors: $GW_EXPOSE_ERRORS"; fi
+        if [[ -n "${GW_CORS_ORIGIN:-}" ]]; then echo "    corsOrigin: '$GW_CORS_ORIGIN'"; fi
+      fi
+      if [ "$HAVE_LLM" = 1 ]; then
+        LLM_ROUTE="${OPENAI_ROUTE:-openai-compat}"
+        echo '- id: llm-pi-ai'
+        echo '  config:'
+        echo '    providers:'
+        echo "      ${LLM_ROUTE}:"
+        echo "        api: '${OPENAI_API:-openai-completions}'"
+        echo "        baseURL: '${OPENAI_BASE_URL}'"
+        echo '        apiKeyEnv: OPENAI_API_KEY'
+        echo '        models:'
+        echo "          - id: '${OPENAI_MODEL}'"
+        if [[ -n "${OPENAI_MODEL_NAME:-}" ]]; then echo "            name: '${OPENAI_MODEL_NAME}'"; fi
+        if [[ -n "${OPENAI_MODEL_CONTEXT_WINDOW:-}" ]]; then echo "            contextWindow: ${OPENAI_MODEL_CONTEXT_WINDOW}"; fi
+        if [[ -n "${OPENAI_MODEL_MAX_TOKENS:-}" ]]; then echo "            maxTokens: ${OPENAI_MODEL_MAX_TOKENS}"; fi
+        # New sessions default to this route. The official DeepSeek adapter row stays
+        # mounted, so both routes appear in session.models and per-session
+        # selectModel can still switch (DEEPSEEK_API_KEY keeps working alongside).
+        echo '- id: agent-default-model'
+        echo '  config:'
+        echo "    provider: '${LLM_ROUTE}'"
+        echo "    model: '${OPENAI_MODEL}'"
+      fi
     } > "$PATCH_FILE"
     chmod 600 "$PATCH_FILE"
-    echo "[entrypoint] regenerated $PATCH_FILE (baseline + facade config from GW_*)"
+    echo "[entrypoint] regenerated $PATCH_FILE (baseline + facade/llm config from env)"
   else
     echo "[entrypoint] note: no GW_* set -- the facade runs on schema defaults; the one-time"
     echo "[entrypoint]       POST {prefix}/key bootstrap is memory-only on this DSH line."
@@ -106,8 +149,10 @@ case "${DSH_VERSION:-}" in
   ;;
 esac
 
-# 3) Model credentials: the DEEPSEEK_API_KEY environment variable ranks highest in the
-#    DSH credential layering, so no file is needed. Without it the node still boots and
+# 3) Model credentials, both routes resolve from the process environment (the top
+#    credential layer, no files needed): DEEPSEEK_API_KEY for the official DeepSeek
+#    adapter; OPENAI_API_KEY via the llm-pi-ai profile's apiKeyEnv when the
+#    OpenAI-compatible route is configured. Without any key the node still boots and
 #    serves the API surface; session turns fail until a key is provided.
 
 # 4) Start: webserver binds 0.0.0.0 via the profile patch; --port and any other CLI

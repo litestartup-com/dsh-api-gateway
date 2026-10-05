@@ -136,7 +136,9 @@ curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
 | --- | --- | --- |
 | `HTTP_PORT` | `80` | External nginx port (plain HTTP; TLS is not wired in v1) |
 | `GW_KEY` | generated | Static facade API key (`X-API-Key`). Empty leaves the one-time `POST /key` bootstrap open — not recommended on a public surface |
-| `DEEPSEEK_API_KEY` | — | Model credential; required for real session turns |
+| `DEEPSEEK_API_KEY` | — | Official DeepSeek route credential; required for real turns unless the OpenAI-compatible route below is configured |
+| `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | — | Optional: all three activate the OpenAI-compatible route and make it the default for new sessions (see below) |
+| `OPENAI_ROUTE` / `OPENAI_API` / `OPENAI_MODEL_NAME` / `OPENAI_MODEL_CONTEXT_WINDOW` / `OPENAI_MODEL_MAX_TOKENS` | see `.env.example` | Optional refinements of that route |
 | `DSH_VERSION` | `0.2.0-rc.2` | Pinned DSH line baked into the image (needs a matching `docker/profile-lock/` entry; `0.1.5-rc.2` remains supported) |
 | `NGINX_IMAGE` | `nginx:alpine` | Override where alpine cannot be pulled (e.g. `docker.m.daocloud.io/library/nginx:alpine`) |
 | `NODE_IMAGE` / `NPM_REGISTRY` | docker.io / npmjs | Build-time mirrors for GFW builds |
@@ -154,6 +156,46 @@ When creating a session through the API, pass a `cwd` under that mount (e.g.
 `./workspaces/my-project` on the host. DSH state (settings, credentials,
 session logs) lives in the `gateway-data` named volume and survives
 `docker compose down`; `down -v` wipes it.
+
+### OpenAI-compatible LLM route
+
+The node image ships DSH's built-in `llm-pi-ai` adapter (the pi-ai multi-provider
+bridge). Setting the three `OPENAI_*` variables in `.env` makes the entrypoint
+**declare** a provider route in the profile composition and default new sessions
+to it — no image rebuild, one `docker compose up -d` away:
+
+```bash
+# .env — any OpenAI-compatible endpoint (OpenAI, DeepSeek's /v1, vLLM, OneAPI, …)
+OPENAI_BASE_URL=https://api.openai.com/v1   # up to, not including, /chat/completions
+OPENAI_API_KEY=***
+OPENAI_MODEL=gpt-4o-mini
+```
+
+```bash
+docker compose up -d                        # recreates the gateway; config regenerates at boot
+node docker/smoke.mjs --model --provider openai-compat   # asserts the route served the turn
+```
+
+Behavior facts (source-verified; private design library `dsh-facts §19`):
+
+- A **declared route** (a key the pi-ai catalog does not ship) spells out the wire
+  protocol, endpoint, and model list: `OPENAI_API` defaults to
+  `openai-completions` (OpenAI Chat Completions; pi-ai also serves
+  `openai-responses`, `anthropic-messages`, `google-vertex`, …). Capacity claims
+  are configuration's job — nothing interrogates a gateway:
+  `OPENAI_MODEL_CONTEXT_WINDOW` (default 262144) and `OPENAI_MODEL_MAX_TOKENS`
+  (default 32768) size a model the catalog does not describe.
+- The key never lands in a config file: the profile stores `apiKeyEnv:
+  OPENAI_API_KEY` and DSH's credential layer resolves the process environment
+  per request (env is its top layer).
+- The official DeepSeek adapter stays mounted: both routes appear in
+  `session.models`, and `session.selectModel` pins an individual session to
+  either. Without the trio, `DEEPSEEK_API_KEY` remains the default path —
+  existing deployments change nothing.
+- `OPENAI_ROUTE` (default `openai-compat`) is the route key: the `provider`
+  value visible in `session.models` and `request/header` events.
+- Requires a 0.2.x DSH line (the stack default). Legacy `0.1.2`/`0.1.5` images
+  ignore `OPENAI_*` with a boot warning.
 
 ### Upgrades & lock refresh
 

@@ -55,6 +55,19 @@ services:
       GW_KEY: ${GW_KEY:-}
       # Model credentials — required for real session turns.
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # Optional OpenAI-compatible LLM route (built-in pi-ai adapter). ALL THREE of
+      # BASE_URL/KEY/MODEL are required to activate; the entrypoint then declares the
+      # route in the profile patch and makes it the default model for new sessions
+      # (the official DeepSeek route stays available alongside). 0.2.x lines only.
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      # Optional route refinements (defaults in parentheses):
+      OPENAI_ROUTE: ${OPENAI_ROUTE:-}               # (openai-compat) providers dict key
+      OPENAI_API: ${OPENAI_API:-}                   # (openai-completions) wire protocol
+      OPENAI_MODEL_NAME: ${OPENAI_MODEL_NAME:-}     # (model id) display name
+      OPENAI_MODEL_CONTEXT_WINDOW: ${OPENAI_MODEL_CONTEXT_WINDOW:-}   # (262144)
+      OPENAI_MODEL_MAX_TOKENS: ${OPENAI_MODEL_MAX_TOKENS:-}           # (32768)
       # Optional facade knobs (see README "Configuration"):
       GW_ADMIN_KEY: ${GW_ADMIN_KEY:-}
       GW_ALLOW_FULL_ACCESS: ${GW_ALLOW_FULL_ACCESS:-}
