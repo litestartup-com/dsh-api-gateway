@@ -93,19 +93,62 @@ case "${DSH_VERSION:-}" in
   HAVE_GW=0
   if [[ -n "${GW_KEY:-}${GW_ADMIN_KEY:-}${GW_ALLOW_FULL_ACCESS:-}${GW_EXPOSE_ERRORS:-}${GW_CORS_ORIGIN:-}" ]]; then HAVE_GW=1; fi
   # OpenAI-compatible LLM route (opt-in): the built-in pi-ai adapter row (llm-pi-ai)
-  # ships dormant in the base bundle; a DECLARED route (a providers key the pi-ai
-  # catalog does not know) must spell out api + baseURL + models, and apiKeyEnv names
-  # the container env var the credentials layer resolves per request (process env is
-  # its top layer). All three OPENAI_ vars are required -- a partial set is ignored
-  # loudly rather than half-configured.
+  # ships dormant in the base bundle. The env vocabulary is SHARED with the sibling
+  # pi-api-facade project (OPENAI_* here; PI_OPENAI_* there, with OPENAI_* accepted as
+  # aliases) so one operator/manager dictionary feeds both node kinds. Semantics mirror
+  # the pi side:
+  #   OPENAI_BASE_URL    activates the route (the only required var; absolute http(s),
+  #                      up to — not including — /chat/completions, usually ends in /v1)
+  #   OPENAI_API_KEY     optional — omit for key-less endpoints (Ollama). When set, the
+  #                      patch stores apiKeyEnv (the NAME of the env var) and the DSH
+  #                      credential layer resolves the process env per request, so the
+  #                      key never lands on disk
+  #   OPENAI_PROVIDER    route key (default `openai` = the pi-ai built-in openai catalog
+  #                      route with its endpoint overridden — catalog model ids come
+  #                      free; a custom id declares a brand-new route)
+  #   OPENAI_MODELS      comma-separated model ids. Optional on the built-in `openai`
+  #                      route; needed in practice for custom ids. NOTE the one honest
+  #                      difference vs pi: a DSH explicit models list REPLACES the
+  #                      route's catalog, where pi ADDS to it (config.d.ts semantics)
+  #   OPENAI_MODEL       single-model shorthand, used when OPENAI_MODELS is absent
+  #   FACADE_MODEL       default model for new sessions, `provider/model` (the same
+  #                      contract as the pi side's PI_FACADE_MODEL; works standalone to
+  #                      re-pin the default to any mounted route). Unset: the first
+  #                      declared model on the route, else the bundle default stays
+  #   OPENAI_API         wire protocol (default openai-completions; dsh-side superset —
+  #                      pi-ai also serves openai-responses / anthropic-messages / …)
+  #   OPENAI_CONTEXT_WINDOW / OPENAI_MAX_TOKENS
+  #                      route-level capacity fallbacks for models that declare none
   HAVE_LLM=0
-  if [[ -n "${OPENAI_BASE_URL:-}" && -n "${OPENAI_API_KEY:-}" && -n "${OPENAI_MODEL:-}" ]]; then
+  LLM_PROVIDER="${OPENAI_PROVIDER:-openai}"
+  LLM_MODELS_CSV="${OPENAI_MODELS:-${OPENAI_MODEL:-}}"
+  if [[ -n "${OPENAI_BASE_URL:-}" ]]; then
     HAVE_LLM=1
-  elif [[ -n "${OPENAI_BASE_URL:-}${OPENAI_API_KEY:-}${OPENAI_MODEL:-}" ]]; then
-    echo "[entrypoint] WARNING: OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL must ALL be set"
-    echo "[entrypoint]          to enable the OpenAI-compatible route -- partial config ignored."
+    if [[ "$LLM_PROVIDER" != "openai" && -z "$LLM_MODELS_CSV" ]]; then
+      echo "[entrypoint] WARNING: custom OPENAI_PROVIDER '$LLM_PROVIDER' without OPENAI_MODELS --"
+      echo "[entrypoint]          a declared route serves no models until the list is set."
+    fi
+  elif [[ -n "${OPENAI_API_KEY:-}${LLM_MODELS_CSV}" ]]; then
+    echo "[entrypoint] WARNING: OPENAI_API_KEY/OPENAI_MODELS set without OPENAI_BASE_URL --"
+    echo "[entrypoint]          the OpenAI-compatible route stays off."
   fi
-  if [ "$HAVE_GW" = 1 ] || [ "$HAVE_LLM" = 1 ]; then
+  # Default model for new sessions: FACADE_MODEL (provider/model) wins; else the first
+  # declared model on the activated route; else the bundle default row is left alone.
+  DEF_PROVIDER=""
+  DEF_MODEL=""
+  if [[ -n "${FACADE_MODEL:-}" ]]; then
+    if [[ "$FACADE_MODEL" == */* ]]; then
+      DEF_PROVIDER="${FACADE_MODEL%%/*}"
+      DEF_MODEL="${FACADE_MODEL#*/}"
+    else
+      echo "[entrypoint] WARNING: FACADE_MODEL '$FACADE_MODEL' is not provider/model -- ignored."
+    fi
+  elif [[ "$HAVE_LLM" = 1 && -n "$LLM_MODELS_CSV" ]]; then
+    DEF_PROVIDER="$LLM_PROVIDER"
+    DEF_MODEL="${LLM_MODELS_CSV%%,*}"
+    DEF_MODEL="$(printf '%s' "$DEF_MODEL" | tr -d '[:space:]')"
+  fi
+  if [ "$HAVE_GW" = 1 ] || [ "$HAVE_LLM" = 1 ] || [[ -n "$DEF_PROVIDER" ]]; then
     {
       cat /opt/api-profile/cordis.patch.yml
       if [ "$HAVE_GW" = 1 ]; then
@@ -118,26 +161,31 @@ case "${DSH_VERSION:-}" in
         if [[ -n "${GW_CORS_ORIGIN:-}" ]]; then echo "    corsOrigin: '$GW_CORS_ORIGIN'"; fi
       fi
       if [ "$HAVE_LLM" = 1 ]; then
-        LLM_ROUTE="${OPENAI_ROUTE:-openai-compat}"
         echo '- id: llm-pi-ai'
         echo '  config:'
         echo '    providers:'
-        echo "      ${LLM_ROUTE}:"
+        echo "      ${LLM_PROVIDER}:"
         echo "        api: '${OPENAI_API:-openai-completions}'"
         echo "        baseURL: '${OPENAI_BASE_URL}'"
-        echo '        apiKeyEnv: OPENAI_API_KEY'
-        echo '        models:'
-        echo "          - id: '${OPENAI_MODEL}'"
-        if [[ -n "${OPENAI_MODEL_NAME:-}" ]]; then echo "            name: '${OPENAI_MODEL_NAME}'"; fi
-        if [[ -n "${OPENAI_MODEL_CONTEXT_WINDOW:-}" ]]; then echo "            contextWindow: ${OPENAI_MODEL_CONTEXT_WINDOW}"; fi
-        if [[ -n "${OPENAI_MODEL_MAX_TOKENS:-}" ]]; then echo "            maxTokens: ${OPENAI_MODEL_MAX_TOKENS}"; fi
-        # New sessions default to this route. The official DeepSeek adapter row stays
-        # mounted, so both routes appear in session.models and per-session
-        # selectModel can still switch (DEEPSEEK_API_KEY keeps working alongside).
+        if [[ -n "${OPENAI_API_KEY:-}" ]]; then echo '        apiKeyEnv: OPENAI_API_KEY'; fi
+        if [[ -n "${OPENAI_CONTEXT_WINDOW:-}" ]]; then echo "        defaultContextWindow: ${OPENAI_CONTEXT_WINDOW}"; fi
+        if [[ -n "${OPENAI_MAX_TOKENS:-}" ]]; then echo "        defaultMaxTokens: ${OPENAI_MAX_TOKENS}"; fi
+        if [[ -n "$LLM_MODELS_CSV" ]]; then
+          echo '        models:'
+          IFS=',' read -ra LLM_MODELS <<< "$LLM_MODELS_CSV" || true
+          for m in "${LLM_MODELS[@]}"; do
+            m="$(printf '%s' "$m" | tr -d '[:space:]')"
+            if [[ -n "$m" ]]; then echo "          - id: '${m}'"; fi
+          done
+        fi
+      fi
+      if [[ -n "$DEF_PROVIDER" && -n "$DEF_MODEL" ]]; then
+        # New sessions default to this pick. Every other mounted route stays available:
+        # session.models lists them all and session.selectModel pins per session.
         echo '- id: agent-default-model'
         echo '  config:'
-        echo "    provider: '${LLM_ROUTE}'"
-        echo "    model: '${OPENAI_MODEL}'"
+        echo "    provider: '${DEF_PROVIDER}'"
+        echo "    model: '${DEF_MODEL}'"
       fi
     } > "$PATCH_FILE"
     chmod 600 "$PATCH_FILE"

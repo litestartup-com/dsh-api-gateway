@@ -116,8 +116,9 @@ curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
 | `HTTP_PORT` | `80` | nginx 对外端口（v1 为纯 HTTP，TLS 未接线） |
 | `GW_KEY` | 生成 | 门面静态 API 密钥（`X-API-Key`）。留空则一次性 `POST /key` 自助发放通道保持开放——公网不建议 |
 | `DEEPSEEK_API_KEY` | — | DeepSeek 官方路由凭据；未配置下方 OpenAI 兼容路由时真实回合必需 |
-| `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | — | 可选：三项齐设即启用 OpenAI 兼容路由并成为新会话默认（见下节） |
-| `OPENAI_ROUTE` / `OPENAI_API` / `OPENAI_MODEL_NAME` / `OPENAI_MODEL_CONTEXT_WINDOW` / `OPENAI_MODEL_MAX_TOKENS` | 见 `.env.example` | 可选：该路由的精调项 |
+| `OPENAI_BASE_URL` | — | 可选：启用 OpenAI 兼容路由（一个 URL 一组模型，见下节） |
+| `OPENAI_API_KEY` / `OPENAI_PROVIDER` / `OPENAI_MODELS` / `OPENAI_MODEL` / `FACADE_MODEL` | 见下节 | 路由密钥（可空）、路由键（默认 `openai`）、模型列表、单模型简写、默认模型（`provider/model`） |
+| `OPENAI_API` / `OPENAI_CONTEXT_WINDOW` / `OPENAI_MAX_TOKENS` | 见 `.env.example` | 可选：协议与容量精调 |
 | `DSH_VERSION` | `0.2.0-rc.2` | 烘进镜像的 DSH 钉版线（需有对应的 `docker/profile-lock/` 锁文件；`0.1.5-rc.2` 仍在支持范围） |
 | `NGINX_IMAGE` | `nginx:alpine` | alpine 拉不动时覆盖（如 `docker.m.daocloud.io/library/nginx:alpine`） |
 | `NODE_IMAGE` / `NPM_REGISTRY` | docker.io / npmjs | 构建期镜像源（国内构建） |
@@ -136,36 +137,49 @@ curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
 
 ### OpenAI 兼容 LLM 路由
 
-节点镜像自带 DSH 内置的 `llm-pi-ai` 适配器（pi-ai 多提供方桥）。在 `.env` 里设齐
-三个 `OPENAI_*` 变量，entrypoint 就会在 profile 组合里**声明**一条提供方路由并把
-新会话默认指过去——不用重建镜像，一次 `docker compose up -d` 生效：
+节点镜像自带 DSH 内置的 `llm-pi-ai` 适配器（pi-ai 多提供方桥）。`.env` 里设
+`OPENAI_BASE_URL` 即启用路由——**一个 URL 挂一组模型**，不用重建镜像，一次
+`docker compose up -d` 生效：
 
 ```bash
-# .env —— 任意 OpenAI 兼容端点（OpenAI、DeepSeek 的 /v1、vLLM、OneAPI……）
+# .env —— 任意 OpenAI 兼容端点（OpenAI、DeepSeek 的 /v1、vLLM、OneAPI、Ollama……）
 OPENAI_BASE_URL=https://api.openai.com/v1   # 到 /chat/completions 之前的前缀（通常含 /v1）
-OPENAI_API_KEY=***
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=***                          # 可选——无钥端点（Ollama）留空即可
+OPENAI_MODELS=gpt-4o-mini,gpt-4o            # 逗号分隔：这个 URL 供哪些模型
+FACADE_MODEL=openai/gpt-4o-mini             # 新会话默认（provider/model 格式）
 ```
 
 ```bash
 docker compose up -d                        # 重建 gateway 容器；配置在启动时再生成
-node docker/smoke.mjs --model --provider openai-compat   # 断言回合确实走了该路由
+node docker/smoke.mjs --model --provider openai   # 断言回合确实走了该路由
 ```
 
-行为事实（源码实证；内部设计库 `dsh-facts §19`）：
+变量词汇与姊妹项目 **[pi-api-facade](https://github.com/litestartup-com/pi-api-facade)
+共用**（那边保留历史名 `PI_OPENAI_*` 作为同一套 `OPENAI_*` 的别名），因此同一份
+运维/manager 配置可以同时喂 Pi 节点和 DSH 节点；两个门面底层同坐 pi-ai，
+`provider/model` 字符串在两边含义完全一致。
 
-- **声明式路由**（pi-ai 目录没有的键）必须自己拼齐协议、端点与模型清单：
-  `OPENAI_API` 默认 `openai-completions`（OpenAI Chat Completions；pi-ai 另有
+行为事实（源码实证；内部设计库 `dsh-facts §20`）：
+
+- `OPENAI_PROVIDER`（默认 `openai`）即路由键——`session.models` 与
+  `request/header` 事件里的 `provider` 值。默认键走 pi-ai **内置 openai 目录路由**
+  只覆盖端点（目录模型 id 白拿）；自定义键 = 全新声明路由，此时应显式列出
+  `OPENAI_MODELS`。
+- 与 pi 侧唯一要诚实标注的差异：DSH 这边显式 `OPENAI_MODELS` 列表是**整体替换**
+  路由目录，pi 侧是**追加**。实际效果一致——对着自家网关本来就该列它真正供的模型。
+- 协议：`OPENAI_API` 默认 `openai-completions`（OpenAI Chat Completions；pi-ai 另有
   `openai-responses`、`anthropic-messages`、`google-vertex` 等）。容量声明是配置方
-  的义务——没有谁会去盘问一个网关：`OPENAI_MODEL_CONTEXT_WINDOW`（默认 262144）与
-  `OPENAI_MODEL_MAX_TOKENS`（默认 32768）给目录未描述的模型定尺寸。
-- 密钥不落任何配置文件：profile 里存的是 `apiKeyEnv: OPENAI_API_KEY`，DSH 凭据层
-  每次请求从进程环境解析（环境变量是最高层）。
-- DeepSeek 官方适配器保持挂载：两条路由都出现在 `session.models`，
-  `session.selectModel` 可把单个会话钉到任一路由。三变量不设 = 现状不变，
-  `DEEPSEEK_API_KEY` 仍是默认路径——既有部署零变化。
-- `OPENAI_ROUTE`（默认 `openai-compat`）即路由键：`session.models` 与
-  `request/header` 事件里的 `provider` 值。
+  的义务——没有谁会去盘问一个网关：`OPENAI_CONTEXT_WINDOW`（默认 262144）与
+  `OPENAI_MAX_TOKENS`（默认 32768）是路由级兜底，供未自行声明的模型使用。
+- 密钥不落任何配置文件：profile 里存的是 `apiKeyEnv: OPENAI_API_KEY`（变量**名**），
+  DSH 凭据层每次请求从进程环境解析（环境变量是最高层）；无钥端点留空即可。
+- `FACADE_MODEL`（`provider/model`，与 pi 侧 `PI_FACADE_MODEL` 同一契约）决定新会话
+  默认模型；不设则取路由上第一个声明的模型；一个模型都没声明时保持 bundle 默认
+  （`deepseek-official/deepseek-flash`）。它也可单独使用——不带任何 `OPENAI_*`
+  也能把默认重新钉到任一已挂载路由。
+- 所有已挂载路由保持可用：`session.models` 全部列出，`session.selectModel` 可把
+  单个会话钉到任一路由。`OPENAI_*` 全不设 = 现状不变，`DEEPSEEK_API_KEY` 仍是
+  默认路径——既有部署零变化。
 - 需要 0.2.x DSH 线（栈默认）。legacy `0.1.2`/`0.1.5` 镜像忽略 `OPENAI_*`
   并在启动时告警。
 

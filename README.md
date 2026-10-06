@@ -136,9 +136,10 @@ curl -s -X POST http://127.0.0.1/api-gw/v1/proxy/session.list \
 | --- | --- | --- |
 | `HTTP_PORT` | `80` | External nginx port (plain HTTP; TLS is not wired in v1) |
 | `GW_KEY` | generated | Static facade API key (`X-API-Key`). Empty leaves the one-time `POST /key` bootstrap open — not recommended on a public surface |
-| `DEEPSEEK_API_KEY` | — | Official DeepSeek route credential; required for real turns unless the OpenAI-compatible route below is configured |
-| `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | — | Optional: all three activate the OpenAI-compatible route and make it the default for new sessions (see below) |
-| `OPENAI_ROUTE` / `OPENAI_API` / `OPENAI_MODEL_NAME` / `OPENAI_MODEL_CONTEXT_WINDOW` / `OPENAI_MODEL_MAX_TOKENS` | see `.env.example` | Optional refinements of that route |
+| `DEEPSEEK_API_KEY` | — | Official DeepSeek route credential; required for real turns unless an OpenAI-compatible route below is configured |
+| `OPENAI_BASE_URL` | — | Optional: activates the OpenAI-compatible route (one URL, a group of models — see below) |
+| `OPENAI_API_KEY` / `OPENAI_PROVIDER` / `OPENAI_MODELS` / `OPENAI_MODEL` / `FACADE_MODEL` | see below | Route credential (optional), key (default `openai`), model list, single-model shorthand, default model (`provider/model`) |
+| `OPENAI_API` / `OPENAI_CONTEXT_WINDOW` / `OPENAI_MAX_TOKENS` | see `.env.example` | Optional protocol / capacity refinements |
 | `DSH_VERSION` | `0.2.0-rc.2` | Pinned DSH line baked into the image (needs a matching `docker/profile-lock/` entry; `0.1.5-rc.2` remains supported) |
 | `NGINX_IMAGE` | `nginx:alpine` | Override where alpine cannot be pulled (e.g. `docker.m.daocloud.io/library/nginx:alpine`) |
 | `NODE_IMAGE` / `NPM_REGISTRY` | docker.io / npmjs | Build-time mirrors for GFW builds |
@@ -160,40 +161,57 @@ session logs) lives in the `gateway-data` named volume and survives
 ### OpenAI-compatible LLM route
 
 The node image ships DSH's built-in `llm-pi-ai` adapter (the pi-ai multi-provider
-bridge). Setting the three `OPENAI_*` variables in `.env` makes the entrypoint
-**declare** a provider route in the profile composition and default new sessions
-to it — no image rebuild, one `docker compose up -d` away:
+bridge). `OPENAI_BASE_URL` in `.env` activates the route — one URL, a group of
+models, no image rebuild, one `docker compose up -d` away:
 
 ```bash
-# .env — any OpenAI-compatible endpoint (OpenAI, DeepSeek's /v1, vLLM, OneAPI, …)
+# .env — any OpenAI-compatible endpoint (OpenAI, DeepSeek's /v1, vLLM, OneAPI, Ollama…)
 OPENAI_BASE_URL=https://api.openai.com/v1   # up to, not including, /chat/completions
-OPENAI_API_KEY=***
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=***                          # optional — omit for key-less endpoints
+OPENAI_MODELS=gpt-4o-mini,gpt-4o            # comma-separated; the group this URL serves
+FACADE_MODEL=openai/gpt-4o-mini             # default for new sessions (provider/model)
 ```
 
 ```bash
 docker compose up -d                        # recreates the gateway; config regenerates at boot
-node docker/smoke.mjs --model --provider openai-compat   # asserts the route served the turn
+node docker/smoke.mjs --model --provider openai   # asserts the route served the turn
 ```
 
-Behavior facts (source-verified; private design library `dsh-facts §19`):
+The variable vocabulary is **shared with the sibling
+[pi-api-facade](https://github.com/litestartup-com/pi-api-facade)** project (which
+keeps its historical `PI_OPENAI_*` names as aliases of the same `OPENAI_*` set), so
+one operator — or one DAC manager wiring layer — feeds a Pi node and a DSH node the
+same model configuration. Both facades sit on the same pi-ai layer underneath, so a
+`provider/model` string means the same thing on both.
 
-- A **declared route** (a key the pi-ai catalog does not ship) spells out the wire
-  protocol, endpoint, and model list: `OPENAI_API` defaults to
-  `openai-completions` (OpenAI Chat Completions; pi-ai also serves
-  `openai-responses`, `anthropic-messages`, `google-vertex`, …). Capacity claims
-  are configuration's job — nothing interrogates a gateway:
-  `OPENAI_MODEL_CONTEXT_WINDOW` (default 262144) and `OPENAI_MODEL_MAX_TOKENS`
-  (default 32768) size a model the catalog does not describe.
+Behavior facts (source-verified; private design library `dsh-facts §20`):
+
+- `OPENAI_PROVIDER` (default `openai`) is the route key — the `provider` value
+  visible in `session.models` and `request/header` events. The default key overrides
+  the endpoint of pi-ai's **built-in openai catalog route**, so its model ids come
+  free; a custom key declares a brand-new route, which should list its models
+  explicitly (`OPENAI_MODELS`).
+- One honest difference vs the pi side: an explicit `OPENAI_MODELS` list **replaces**
+  the route's catalog here, where pi *adds* to it. Practical effect is the same —
+  against a custom gateway you list what it actually serves.
+- Wire protocol: `OPENAI_API` defaults to `openai-completions` (OpenAI Chat
+  Completions; pi-ai also serves `openai-responses`, `anthropic-messages`,
+  `google-vertex`, …). Capacity claims are configuration's job — nothing interrogates
+  a gateway: `OPENAI_CONTEXT_WINDOW` (default 262144) and `OPENAI_MAX_TOKENS`
+  (default 32768) are the route-level fallbacks for models that declare none.
 - The key never lands in a config file: the profile stores `apiKeyEnv:
-  OPENAI_API_KEY` and DSH's credential layer resolves the process environment
-  per request (env is its top layer).
-- The official DeepSeek adapter stays mounted: both routes appear in
-  `session.models`, and `session.selectModel` pins an individual session to
-  either. Without the trio, `DEEPSEEK_API_KEY` remains the default path —
-  existing deployments change nothing.
-- `OPENAI_ROUTE` (default `openai-compat`) is the route key: the `provider`
-  value visible in `session.models` and `request/header` events.
+  OPENAI_API_KEY` (the variable *name*) and DSH's credential layer resolves the
+  process environment per request (env is its top layer). A key-less endpoint simply
+  leaves `OPENAI_API_KEY` empty.
+- `FACADE_MODEL` (`provider/model`, same contract as the pi side's
+  `PI_FACADE_MODEL`) picks the default for new sessions; unset, the first declared
+  model wins, and with no models declared the bundle default
+  (`deepseek-official/deepseek-flash`) stays. It also works standalone — without any
+  `OPENAI_*` — to re-pin the default to any mounted route.
+- Every mounted route stays available: all of them appear in `session.models`, and
+  `session.selectModel` pins an individual session to any of them. With no
+  `OPENAI_*` at all, `DEEPSEEK_API_KEY` remains the default path — existing
+  deployments change nothing.
 - Requires a 0.2.x DSH line (the stack default). Legacy `0.1.2`/`0.1.5` images
   ignore `OPENAI_*` with a boot warning.
 

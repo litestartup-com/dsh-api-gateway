@@ -55,19 +55,22 @@ services:
       GW_KEY: ${GW_KEY:-}
       # Model credentials — required for real session turns.
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      # Optional OpenAI-compatible LLM route (built-in pi-ai adapter). ALL THREE of
-      # BASE_URL/KEY/MODEL are required to activate; the entrypoint then declares the
-      # route in the profile patch and makes it the default model for new sessions
-      # (the official DeepSeek route stays available alongside). 0.2.x lines only.
+      # Optional OpenAI-compatible LLM route (built-in pi-ai adapter). OPENAI_BASE_URL
+      # alone activates it; the env vocabulary is shared with the sibling pi-api-facade
+      # project (OPENAI_* on both; the pi side also keeps its PI_OPENAI_* aliases), so
+      # one operator/manager dictionary feeds both node kinds. The entrypoint declares
+      # the route in the profile patch; FACADE_MODEL (provider/model) picks the default
+      # for new sessions — every mounted route stays listed in session.models and
+      # selectable per session. 0.2.x lines only.
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-}
-      # Optional route refinements (defaults in parentheses):
-      OPENAI_ROUTE: ${OPENAI_ROUTE:-}               # (openai-compat) providers dict key
-      OPENAI_API: ${OPENAI_API:-}                   # (openai-completions) wire protocol
-      OPENAI_MODEL_NAME: ${OPENAI_MODEL_NAME:-}     # (model id) display name
-      OPENAI_MODEL_CONTEXT_WINDOW: ${OPENAI_MODEL_CONTEXT_WINDOW:-}   # (262144)
-      OPENAI_MODEL_MAX_TOKENS: ${OPENAI_MODEL_MAX_TOKENS:-}           # (32768)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}       # optional: omit for key-less endpoints (Ollama)
+      OPENAI_PROVIDER: ${OPENAI_PROVIDER:-}     # (openai) route key
+      OPENAI_MODELS: ${OPENAI_MODELS:-}         # comma-separated model ids
+      OPENAI_MODEL: ${OPENAI_MODEL:-}           # single-model shorthand (OPENAI_MODELS wins)
+      OPENAI_API: ${OPENAI_API:-}               # (openai-completions) wire protocol
+      OPENAI_CONTEXT_WINDOW: ${OPENAI_CONTEXT_WINDOW:-}   # (262144) route-level capacity fallback
+      OPENAI_MAX_TOKENS: ${OPENAI_MAX_TOKENS:-}           # (32768) route-level output fallback
+      FACADE_MODEL: ${FACADE_MODEL:-}           # default model for new sessions, provider/model
       # Optional facade knobs (see README "Configuration"):
       GW_ADMIN_KEY: ${GW_ADMIN_KEY:-}
       GW_ALLOW_FULL_ACCESS: ${GW_ALLOW_FULL_ACCESS:-}

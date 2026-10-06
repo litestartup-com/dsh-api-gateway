@@ -32,10 +32,10 @@ ensure GW_KEY "${GW_KEY:-apigw-$(openssl rand -hex 24)}"
 if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
   ensure DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
 fi
-# OpenAI-compatible route: carried over when exported (all three activate it; the
-# entrypoint ignores a partial set with a warning).
-for k in OPENAI_BASE_URL OPENAI_API_KEY OPENAI_MODEL OPENAI_ROUTE OPENAI_API \
-         OPENAI_MODEL_NAME OPENAI_MODEL_CONTEXT_WINDOW OPENAI_MODEL_MAX_TOKENS; do
+# OpenAI-compatible route: carried over when exported (OPENAI_BASE_URL alone activates
+# it; the entrypoint resolves provider/models/defaults — see .env.example).
+for k in OPENAI_BASE_URL OPENAI_API_KEY OPENAI_PROVIDER OPENAI_MODELS OPENAI_MODEL \
+         OPENAI_API OPENAI_CONTEXT_WINDOW OPENAI_MAX_TOKENS FACADE_MODEL; do
   v="$(printenv "$k" 2>/dev/null || true)"
   if [ -n "$v" ]; then ensure "$k" "$v"; fi
 done
@@ -45,12 +45,9 @@ mkdir -p "$REPO_ROOT/workspaces"
 
 echo "[gen-env] $ENV_FILE ready (idempotent)."
 HAS_DSK=0; grep -q '^DEEPSEEK_API_KEY=..' "$ENV_FILE" && HAS_DSK=1
-HAS_OAI=0
-if grep -q '^OPENAI_BASE_URL=..' "$ENV_FILE" && grep -q '^OPENAI_API_KEY=..' "$ENV_FILE" && grep -q '^OPENAI_MODEL=..' "$ENV_FILE"; then
-  HAS_OAI=1
-fi
+HAS_OAI=0; grep -q '^OPENAI_BASE_URL=..' "$ENV_FILE" && HAS_OAI=1
 if [ "$HAS_DSK" = 0 ] && [ "$HAS_OAI" = 0 ]; then
-  echo "[gen-env] WARNING: neither DEEPSEEK_API_KEY nor the OPENAI_* trio is set -- the node"
-  echo "[gen-env]          will boot and serve the API surface, but session turns will fail"
-  echo "[gen-env]          until you fill in one of them."
+  echo "[gen-env] WARNING: neither DEEPSEEK_API_KEY nor an OPENAI_BASE_URL route is set -- the"
+  echo "[gen-env]          node will boot and serve the API surface, but session turns will"
+  echo "[gen-env]          fail until you fill in one of them."
 fi
