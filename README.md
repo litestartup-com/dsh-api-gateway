@@ -24,7 +24,7 @@ API-key auth and a deny-by-default whitelist.
 
 The facade runs **inside** a DSH host, so its compatibility surface is the host
 version. The declared range lives in `package.json` `peerDependencies`
-(`^0.1.2-rc.1 || ^0.2.0-0` — dual-range since facade 0.2.4: the 0.2.0 corridor
+(`^0.1.2-rc.1 || ^0.2.0-0 || ^0.2.1-rc.1 || ^0.2.2-0` — quad-range since facade 0.2.6: the 0.2.0 corridor
 broke the old ceiling, and the DSH host enforces peers at install **and**
 startup); the pairings below are the ones **verified end-to-end** — wire
 contract, question/approval card chains, and GUI token capture — not merely
@@ -58,6 +58,13 @@ semver-declared:
 > zero changes. The wire contract itself is unchanged — managers and probes
 > pinned to older facade commits keep working against 0.2.0 hosts through
 > this facade.
+
+> **0.2.1 / 0.2.2 corridor note** (facade 0.2.6): the peer window now also
+> declares `^0.2.1-rc.1` and `^0.2.2-0` so the `0.2.1-rc.5` and `0.2.2-rc.5`
+> DSH lines resolve against this facade. These corridors are **declared but not
+> yet verified end-to-end**; the manager matrix marks them `pending` until the
+> pilot and conformance gates pass (ALIGN-26 cards). `0.2.2` additionally
+> requires Node ≥ 24.9, which is a separate image change.
 
 Consumers pin the facade **by commit**
 (`github:litestartup-com/dsh-api-gateway#<sha>`), so each DSH line is
