@@ -5,6 +5,15 @@ by commit pin (`github:litestartup-com/dsh-api-gateway#<sha>`), so each entry
 records the peer window and the compatibility verification scope for that
 release.
 
+## 0.2.9
+
+### Fixed
+
+- **Question/approval resume on 0.2.x hosts**: `$events/result` is now sent with the
+  owner peer. The shared Fetch handler defaults to the browser peer, so the host
+  rejected the result as cross-peer (or read an undefined `signal`) and interactive
+  cards never resumed.
+
 ## 0.2.8
 
 ### Changed

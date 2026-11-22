@@ -63,58 +63,58 @@ export interface Config {
     /** Optional override for the proxy whitelist; defaults to DEFAULT_PROXY_WHITELIST. */
     proxyWhitelist: string[];
 }
-export declare const Config: z<Schemastery.ObjectS<{
-    prefix: z<string, string>;
-    enabled: z<boolean, boolean>;
-    apiKeys: z<string[], string[]>;
-    provisionedKey: z<string, string>;
-    allowKeyProvision: z<boolean, boolean>;
-    adminKey: z<string, string>;
-    corsOrigin: z<string | string[], string | string[]>;
-    exposeErrors: z<boolean, boolean>;
-    proxyTarget: z<string, string>;
-    allowFullAccess: z<boolean, boolean>;
-    proxyWhitelist: z<string[], string[]>;
-}>, Schemastery.ObjectT<{
-    prefix: z<string, string>;
-    enabled: z<boolean, boolean>;
-    apiKeys: z<string[], string[]>;
-    provisionedKey: z<string, string>;
-    allowKeyProvision: z<boolean, boolean>;
-    adminKey: z<string, string>;
-    corsOrigin: z<string | string[], string | string[]>;
-    exposeErrors: z<boolean, boolean>;
-    proxyTarget: z<string, string>;
-    allowFullAccess: z<boolean, boolean>;
-    proxyWhitelist: z<string[], string[]>;
-}>>;
+export declare const Config: z<Schemastery.ObjectS<NoInfer<{
+    prefix: z<string, string, "defined">;
+    enabled: z<boolean, boolean, "defined">;
+    apiKeys: z<string[], string[], "defined">;
+    provisionedKey: z<string, string, "plain">;
+    allowKeyProvision: z<boolean, boolean, "defined">;
+    adminKey: z<string, string, "plain">;
+    corsOrigin: z<string | string[], string | string[], "defined">;
+    exposeErrors: z<boolean, boolean, "defined">;
+    proxyTarget: z<string, string, "defined">;
+    allowFullAccess: z<boolean, boolean, "defined">;
+    proxyWhitelist: z<string[], string[], "defined">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    prefix: z<string, string, "defined">;
+    enabled: z<boolean, boolean, "defined">;
+    apiKeys: z<string[], string[], "defined">;
+    provisionedKey: z<string, string, "plain">;
+    allowKeyProvision: z<boolean, boolean, "defined">;
+    adminKey: z<string, string, "plain">;
+    corsOrigin: z<string | string[], string | string[], "defined">;
+    exposeErrors: z<boolean, boolean, "defined">;
+    proxyTarget: z<string, string, "defined">;
+    allowFullAccess: z<boolean, boolean, "defined">;
+    proxyWhitelist: z<string[], string[], "defined">;
+}>>, "plain">;
 declare const _default: {
     inject: string[];
-    Config: z<Schemastery.ObjectS<{
-        prefix: z<string, string>;
-        enabled: z<boolean, boolean>;
-        apiKeys: z<string[], string[]>;
-        provisionedKey: z<string, string>;
-        allowKeyProvision: z<boolean, boolean>;
-        adminKey: z<string, string>;
-        corsOrigin: z<string | string[], string | string[]>;
-        exposeErrors: z<boolean, boolean>;
-        proxyTarget: z<string, string>;
-        allowFullAccess: z<boolean, boolean>;
-        proxyWhitelist: z<string[], string[]>;
-    }>, Schemastery.ObjectT<{
-        prefix: z<string, string>;
-        enabled: z<boolean, boolean>;
-        apiKeys: z<string[], string[]>;
-        provisionedKey: z<string, string>;
-        allowKeyProvision: z<boolean, boolean>;
-        adminKey: z<string, string>;
-        corsOrigin: z<string | string[], string | string[]>;
-        exposeErrors: z<boolean, boolean>;
-        proxyTarget: z<string, string>;
-        allowFullAccess: z<boolean, boolean>;
-        proxyWhitelist: z<string[], string[]>;
-    }>>;
+    Config: z<Schemastery.ObjectS<NoInfer<{
+        prefix: z<string, string, "defined">;
+        enabled: z<boolean, boolean, "defined">;
+        apiKeys: z<string[], string[], "defined">;
+        provisionedKey: z<string, string, "plain">;
+        allowKeyProvision: z<boolean, boolean, "defined">;
+        adminKey: z<string, string, "plain">;
+        corsOrigin: z<string | string[], string | string[], "defined">;
+        exposeErrors: z<boolean, boolean, "defined">;
+        proxyTarget: z<string, string, "defined">;
+        allowFullAccess: z<boolean, boolean, "defined">;
+        proxyWhitelist: z<string[], string[], "defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        prefix: z<string, string, "defined">;
+        enabled: z<boolean, boolean, "defined">;
+        apiKeys: z<string[], string[], "defined">;
+        provisionedKey: z<string, string, "plain">;
+        allowKeyProvision: z<boolean, boolean, "defined">;
+        adminKey: z<string, string, "plain">;
+        corsOrigin: z<string | string[], string | string[], "defined">;
+        exposeErrors: z<boolean, boolean, "defined">;
+        proxyTarget: z<string, string, "defined">;
+        allowFullAccess: z<boolean, boolean, "defined">;
+        proxyWhitelist: z<string[], string[], "defined">;
+    }>>, "plain">;
     apply(ctx: Context, config: Config): void;
 };
 export default _default;

@@ -827,12 +827,18 @@ export default {
                 ? openWire(endpoint, payload, undefined, ownerPeer, signal)
                 : openWire(endpoint, payload, signal)),
               sendResult: async (args, signal) => {
-                const response = await sharedFetch.fetch(new Request('http://ohdsh-internal/api/$events/result', {
+                // The shared Fetch handler takes (request, peer): the peer is what the
+                // host checks the $events client against. Passing it here is required on
+                // 0.2.x hosts -- without it the fetch runs unauthenticated and the result
+                // is rejected (undefined 'signal' / cross-peer), so question/approval
+                // cards never resume.
+                const request = new Request('http://ohdsh-internal/api/$events/result', {
                   method: 'POST',
                   headers: { 'content-type': 'application/json' },
                   body: JSON.stringify({ type: 'client-request', rpcId: `apigw-${randomBytes(8).toString('hex')}`, method: '$events/result', payload: { args } }),
                   signal,
-                }))
+                })
+                const response = await (sharedFetch.fetch as unknown as (req: Request, peer: unknown) => Promise<Response>)(request, ownerPeer)
                 if (!response.ok) throw new Error(`$events/result: HTTP ${response.status}`)
               },
               onFrame: (kind, event) => {
