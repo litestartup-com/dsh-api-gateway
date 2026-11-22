@@ -1,0 +1,26 @@
+name: ci
+"on":
+  push:
+  pull_request:
+defaults:
+  run:
+    shell: bash
+jobs:
+  test:
+    runs-on: dev
+    steps:
+      - name: checkout
+        run: |
+          git clone --depth 1 "https://x-access-token:${{ github.token }}@gitea.ohdsh.com/dev/dsh-api-facade.git" .
+      - name: test
+        run: |
+          set -e
+          if [ -f package.json ]; then
+            npm ci || npm install
+            npm test --if-present
+          fi
+          if ls *.py >/dev/null 2>&1; then
+            python3 -m compileall -q . >/dev/null
+          fi
+          if [ -f go.mod ]; then go build ./...; fi
+          echo "ci ok"
