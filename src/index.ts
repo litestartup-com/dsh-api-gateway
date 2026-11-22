@@ -36,7 +36,7 @@ import z from '@deepseek-ai/schemastery'
 import { WebSocket, WebSocketServer } from 'ws'
 import { provisionDecision, resolveCorsOrigin, routeSegments } from './http.js'
 import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed } from './proxy.js'
-import { HOST_DESCRIBE, invokeRemote, isMigrated, readHistory, type GatewayInvoker, type GatewayStreamer } from './adapter.js'
+import { HOST_DESCRIBE, invokeRemote, isMigrated, readHistory, type GatewayInvoker, type GatewayStreamer, type OwnerPeer } from './adapter.js'
 import { FollowRegistry, hostSupportsAssistantStream } from './streams.js'
 import { ControlBridge } from './streams.js'
 import { Answerer } from './answerer.js'
@@ -133,6 +133,24 @@ export default {
      * cfg.provisionedKey is the real storage.
      */
     let volatileKey: string | null = null
+
+    /**
+     * 0.2.x 起进程内 typertGateway.invoke/stream 要求显式命名说话的 Peer。
+     * facade 是宿主内置的 owner 侧调用方：principal 固定 owner（跳过远程访问
+     * 判定），interactions=answer（answerer 订阅 $events 转发流并回答案）。
+     * 0.1.x 宿主忽略多余字段，多传 peer 无害；0.2.x 宿主缺 peer 时
+     * session.list/follow 直接抛 "Cannot read properties of undefined
+     * (reading 'signal')"。
+     */
+    const ownerPeerController = new AbortController()
+    const ownerPeer: OwnerPeer = {
+      id: 'facade-owner',
+      ctx,
+      principal: { kind: 'owner' },
+      signal: ownerPeerController.signal,
+      interactions: 'answer',
+      dispose: async () => { ownerPeerController.abort() },
+    }
 
     // ---- primitives ----
 
@@ -298,7 +316,7 @@ export default {
           return sendJson(res, 501, { error: 'service_unavailable', hint: 'host typertGateway stream is not available' })
         }
         try {
-          const value = await readHistory(gateway as GatewayStreamer, payload.sessionId)
+          const value = await readHistory(gateway as GatewayStreamer, payload.sessionId, ownerPeer)
           return sendJson(res, 200, { type: 'server-response', rpcId, result: { ok: true, value } })
         } catch (error) {
           const code = (error as { code?: unknown })?.code
@@ -329,7 +347,7 @@ export default {
         return sendJson(res, 501, { error: 'service_unavailable', hint: 'host typertGateway is not available' })
       }
       try {
-        const value = await invokeRemote(gateway as GatewayInvoker, method, envelope.payload, AbortSignal.timeout(PROXY_TIMEOUT_MS))
+        const value = await invokeRemote(gateway as GatewayInvoker, method, envelope.payload, ownerPeer, AbortSignal.timeout(PROXY_TIMEOUT_MS))
         // 直播桥：会话经网关建立/唤醒时即入流（follow 流事件经 mux 广播）。
         if (method === 'session.create') {
           const created = value as { sessionId?: unknown }
@@ -400,11 +418,11 @@ export default {
     {
       const streamer = {
         stream: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
-          const gateway = ctx.get('typertGateway', true) as TypertGateway | undefined
+          const gateway = ctx.get('typertGateway', true) as GatewayStreamer | undefined
           if (gateway === undefined || gateway.stream === undefined) {
             throw new Error('host typertGateway stream is not available')
           }
-          return gateway.stream(request)
+          return gateway.stream({ ...request, peer: ownerPeer })
         },
       }
       registry = new FollowRegistry(
@@ -793,18 +811,20 @@ export default {
           // wireStream.open 签名在 0.1.7→0.2.0 走廊漂移（两代宿主树 lib 实证，
           // 192.168.33.11）：旧宿主 (endpoint, payload, signal)——arity 3；
           // dsh-api-gateway 0.2.0 起 (endpoint, payload, uplink, peer, signal)——arity 5
-          // （J1-06 duplex uplink + 显式 Peer）。$events 是纯下行：uplink/peer 传
-          // undefined（宿主 releaseUplink 对非异步可迭代静默容忍、openRemoteEvents
-          // 不读 peer）。若按旧 3 参调用新宿主，signal 会落进 uplink 槽而 signal=
-          // undefined——惰性生成器 open 不抛错、首次迭代 AbortSignal.any 才炸，
-          // 泵静默死亡且 health 无错可报（实测：answererFrames=0、问答永久挂起）。
+          // （J1-06 duplex uplink + 显式 Peer）。$events 是纯下行：uplink 传
+          // undefined（宿主 releaseUplink 对非异步可迭代静默容忍），peer 传
+          // ownerPeer（0.2.x 的 openWireStream 会对 $events 跑 assertPeerLive/
+          // requireInteractions，peer 不能是 undefined）。若按旧 3 参调用新宿主，
+          // signal 会落进 uplink 槽而 signal=undefined——惰性生成器 open 不抛错、
+          // 首次迭代 AbortSignal.any 才炸，泵静默死亡且 health 无错可报（实测：
+          // answererFrames=0、问答永久挂起）。
           const openWire = gateway.wireStream.open
           const duplexSig = openWire.length >= 5
           const sharedFetch = connection.createSharedFetchHandler('/api')
           try {
             const mounted = await answerer.mountRemote({
               openStream: (endpoint, payload, signal) => (duplexSig
-                ? openWire(endpoint, payload, undefined, undefined, signal)
+                ? openWire(endpoint, payload, undefined, ownerPeer, signal)
                 : openWire(endpoint, payload, signal)),
               sendResult: async (args, signal) => {
                 const response = await sharedFetch.fetch(new Request('http://ohdsh-internal/api/$events/result', {

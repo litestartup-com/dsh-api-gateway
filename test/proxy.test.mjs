@@ -7,6 +7,19 @@ import { DEFAULT_PROXY_WHITELIST, isProxyMethodAllowed } from '../lib/proxy.js'
 import { argsFor, isMigrated, invokeRemote, readHistory, REMOTE_METHODS, translateModelCatalog } from '../lib/adapter.js'
 import plugin from '../lib/index.js'
 
+// ---- owner peer mock (0.2.x 进程内 invoke/stream 必填 peer) ----
+const makeOwnerPeer = () => {
+  const controller = new AbortController()
+  return {
+    id: 'test-owner',
+    ctx: {},
+    principal: { kind: 'owner' },
+    signal: controller.signal,
+    interactions: 'answer',
+    dispose: async () => controller.abort(),
+  }
+}
+
 // ---- pure helpers ----
 
 test('apiKeys carries the secret role on the array itself', () => {
@@ -41,9 +54,10 @@ test('adapter: session.list maps to session/list with descriptor-named args', as
 
   const calls = []
   const invoker = { invoke: async (request) => { calls.push(request); return { items: [] } } }
-  const value = await invokeRemote(invoker, 'session.list', { cursor: 'c1' })
+  const peer = makeOwnerPeer()
+  const value = await invokeRemote(invoker, 'session.list', { cursor: 'c1' }, peer)
   assert.deepEqual(value, { items: [] })
-  assert.deepEqual(calls[0], { namespace: 'session', method: 'list', args: { _request: { cursor: 'c1' } }, signal: undefined })
+  assert.deepEqual(calls[0], { namespace: 'session', method: 'list', args: { _request: { cursor: 'c1' } }, peer, signal: undefined })
 })
 
 test('adapter: host.describe is synthesized (0.1.2 has no such Remote)', async () => {
@@ -104,9 +118,10 @@ test('adapter: session.create maps to session/create with request-named args', a
 
   const calls = []
   const invoker = { invoke: async (request) => { calls.push(request); return { sessionId: 's9' } } }
-  const value = await invokeRemote(invoker, 'session.create', { cwd: 'C:/ws' })
+  const peer = makeOwnerPeer()
+  const value = await invokeRemote(invoker, 'session.create', { cwd: 'C:/ws' }, peer)
   assert.deepEqual(value, { sessionId: 's9' })
-  assert.deepEqual(calls[0], { namespace: 'session', method: 'create', args: { request: { cwd: 'C:/ws' } }, signal: undefined })
+  assert.deepEqual(calls[0], { namespace: 'session', method: 'create', args: { request: { cwd: 'C:/ws' } }, peer, signal: undefined })
 })
 
 test('adapter: session.prompt mints the required requestId and keeps the queue contract', async () => {
@@ -127,9 +142,10 @@ test('adapter: session.prompt mints the required requestId and keeps the queue c
 test('adapter: session.cancel passes the sessionId through', async () => {
   const calls = []
   const invoker = { invoke: async (request) => { calls.push(request); return { accepted: true } } }
-  const value = await invokeRemote(invoker, 'session.cancel', { sessionId: 's1' })
+  const peer = makeOwnerPeer()
+  const value = await invokeRemote(invoker, 'session.cancel', { sessionId: 's1' }, peer)
   assert.deepEqual(value, { accepted: true })
-  assert.deepEqual(calls[0], { namespace: 'session', method: 'cancel', args: { request: { sessionId: 's1' } }, signal: undefined })
+  assert.deepEqual(calls[0], { namespace: 'session', method: 'cancel', args: { request: { sessionId: 's1' } }, peer, signal: undefined })
 })
 
 test('adapter: session.history reads the follow snapshot and translates records', async () => {
@@ -153,7 +169,8 @@ test('adapter: session.history reads the follow snapshot and translates records'
       return (async function* () { yield snapshot })()
     },
   }
-  const value = await readHistory(streamer, 's1')
+  const peer = makeOwnerPeer()
+  const value = await readHistory(streamer, 's1', peer)
   assert.deepEqual(value, {
     events: [
       { event: snapshot.records[0].event },
@@ -166,6 +183,7 @@ test('adapter: session.history reads the follow snapshot and translates records'
   assert.deepEqual(streamCalls[0], {
     namespace: 'session', method: 'follow',
     args: { request: { address: { kind: 'session', sessionId: 's1' } } },
+    peer,
   })
 })
 

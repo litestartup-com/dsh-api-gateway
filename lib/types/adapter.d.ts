@@ -14,11 +14,32 @@ export interface GatewayInvoker {
 export interface GatewayStreamer {
     stream(request: InvokeRemoteRequest): Promise<AsyncIterable<unknown>>;
 }
+/**
+ * 进程内 Remote 调用要显式命名的说话 Peer（0.2.x 起必填）。
+ *
+ * 0.1.x 的 `typertGateway.invoke/stream` 只有 namespace/method/args/signal 四字段；
+ * 0.2.0 起 `InvokeRemoteRequest` 加了必填 `peer`（PeerScope），并新增
+ * uplink/uplinkWindow。facade 是宿主内置的 owner 侧调用方：peer.principal 固定
+ * `owner`（跳过远程访问判定），interactions=answer（answerer 要订阅 $events
+ * 转发流并回答案）。这里用结构子集，避免把 dsh-typert-protocol 拉成直接依赖。
+ */
+export interface OwnerPeer {
+    readonly id: string;
+    /** 生命周期归 owner 的 Cordis 作用域（进程内 unary/stream 路径不读，仅保留给 Peer 契约）。 */
+    readonly ctx: unknown;
+    readonly principal: {
+        readonly kind: 'owner';
+    };
+    readonly signal: AbortSignal;
+    readonly interactions: 'answer' | 'none';
+    readonly dispose: () => Promise<void>;
+}
 /** 进程内 Remote 请求（字段名必须与 descriptor 精确一致）。 */
 export interface InvokeRemoteRequest {
     readonly namespace: string;
     readonly method: string;
     readonly args: Readonly<Record<string, unknown>>;
+    readonly peer: OwnerPeer;
     readonly signal?: AbortSignal;
 }
 /** 白名单方法 → 0.1.2 Remote 坐标。Phase 2 起逐个补齐其余白名单方法。 */
@@ -66,7 +87,7 @@ export declare const argsFor: (method: string, payload: unknown) => Record<strin
  */
 export declare const translateModelCatalog: (catalog: unknown) => unknown;
 /** 一次直调：返回业务 value；抛错时由调用方翻译成 server-response 错误信封。 */
-export declare const invokeRemote: (invoker: GatewayInvoker, method: string, payload: unknown, signal?: AbortSignal) => Promise<unknown>;
+export declare const invokeRemote: (invoker: GatewayInvoker, method: string, payload: unknown, peer: OwnerPeer, signal?: AbortSignal) => Promise<unknown>;
 /**
  * `session.history` 的 0.1.2 翻译：0.1.2 无同名 Remote，历史经
  * `session/follow` 流（先出 snapshot 帧再出增量）。网关只取首帧快照，
@@ -81,7 +102,7 @@ export declare const invokeRemote: (invoker: GatewayInvoker, method: string, pay
  */
 export declare const readHistory: (streamer: {
     stream(request: InvokeRemoteRequest): Promise<AsyncIterable<unknown>>;
-}, sessionId: string) => Promise<{
+}, sessionId: string, peer: OwnerPeer) => Promise<{
     events: unknown[];
     hasMore: boolean;
     projections: unknown;

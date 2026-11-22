@@ -22,11 +22,31 @@ export interface GatewayStreamer {
   stream(request: InvokeRemoteRequest): Promise<AsyncIterable<unknown>>
 }
 
+/**
+ * 进程内 Remote 调用要显式命名的说话 Peer（0.2.x 起必填）。
+ *
+ * 0.1.x 的 `typertGateway.invoke/stream` 只有 namespace/method/args/signal 四字段；
+ * 0.2.0 起 `InvokeRemoteRequest` 加了必填 `peer`（PeerScope），并新增
+ * uplink/uplinkWindow。facade 是宿主内置的 owner 侧调用方：peer.principal 固定
+ * `owner`（跳过远程访问判定），interactions=answer（answerer 要订阅 $events
+ * 转发流并回答案）。这里用结构子集，避免把 dsh-typert-protocol 拉成直接依赖。
+ */
+export interface OwnerPeer {
+  readonly id: string
+  /** 生命周期归 owner 的 Cordis 作用域（进程内 unary/stream 路径不读，仅保留给 Peer 契约）。 */
+  readonly ctx: unknown
+  readonly principal: { readonly kind: 'owner' }
+  readonly signal: AbortSignal
+  readonly interactions: 'answer' | 'none'
+  readonly dispose: () => Promise<void>
+}
+
 /** 进程内 Remote 请求（字段名必须与 descriptor 精确一致）。 */
 export interface InvokeRemoteRequest {
   readonly namespace: string
   readonly method: string
   readonly args: Readonly<Record<string, unknown>>
+  readonly peer: OwnerPeer
   readonly signal?: AbortSignal
 }
 
@@ -229,6 +249,7 @@ export const invokeRemote = async (
   invoker: GatewayInvoker,
   method: string,
   payload: unknown,
+  peer: OwnerPeer,
   signal?: AbortSignal,
 ): Promise<unknown> => {
   if (SYNTHETIC_METHODS.has(method)) {
@@ -240,7 +261,7 @@ export const invokeRemote = async (
   if (target === undefined) {
     throw new Error(`gateway: method ${JSON.stringify(method)} is not migrated to the in-process adapter`)
   }
-  const value = await invoker.invoke({ namespace: target.namespace, method: target.method, args: argsFor(method, payload), signal })
+  const value = await invoker.invoke({ namespace: target.namespace, method: target.method, args: argsFor(method, payload), peer, signal })
   return method === 'session.models' ? translateModelCatalog(value) : value
 }
 
@@ -259,11 +280,13 @@ export const invokeRemote = async (
 export const readHistory = async (
   streamer: { stream(request: InvokeRemoteRequest): Promise<AsyncIterable<unknown>> },
   sessionId: string,
+  peer: OwnerPeer,
 ): Promise<{ events: unknown[]; hasMore: boolean; projections: unknown }> => {
   const stream = await streamer.stream({
     namespace: 'session',
     method: 'follow',
     args: { request: { address: { kind: 'session', sessionId } } },
+    peer,
   })
   const first = await stream[Symbol.asyncIterator]().next()
   if (first.done) throw new Error('session/follow stream closed without a snapshot frame')
