@@ -5,6 +5,24 @@ by commit pin (`github:litestartup-com/dsh-api-gateway#<sha>`), so each entry
 records the peer window and the compatibility verification scope for that
 release.
 
+## 0.2.8
+
+### Changed
+
+- **0.2.2 compatibility** (align-06): `session/control` projection delta frames are
+  adapted to the batched `changes: [{key, val}]` shape used by DSH 0.2.2-rc.5.
+- **Tool failure codes**: `tool/result` errors now surface `data.error.name` and
+  `data.error.code` to remote clients instead of a generic failure.
+- Tests: 89/89 passing on the 0.2.2-rc.5 types.
+
+## 0.2.7
+
+### Fixed
+
+- **In-process invoke/stream** now passes the owner peer to the host gateway
+  (`session.list` and other 0.2.x calls no longer die on
+  `Cannot read properties of undefined (reading 'signal')`).
+
 ## 0.2.6
 
 ### Changed
