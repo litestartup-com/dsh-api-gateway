@@ -117,6 +117,36 @@ test('ControlBridge translates baseline + live projections and reconnects after 
   assert.equal(opens, before, 'dispose stops the reconnect loop')
 })
 
+test('ControlBridge translates the 0.2.2 batched projection delta (changes:[{key,val}])', async () => {
+  const broadcasted = []
+  let release = null
+  const bridge = new ControlBridge(
+    {
+      stream: async () => (async function* () {
+        yield { type: 'baseline', value: { projections: { s1: { asOfSeq: 1, values: {} } } } }
+        // 0.2.2 SessionProjectionUpdate: one frame carries every changed key.
+        yield { type: 'projection', sessionId: 's1', seq: 6, changes: [{ key: 'title', val: 't2' }, { key: 'tokenUsage', val: { outputTokens: 4 } }] }
+        await new Promise((resolve) => { release = resolve })
+      })(),
+    },
+    (json) => broadcasted.push(JSON.parse(json)),
+    () => {},
+    10,
+  )
+  bridge.start()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(
+    broadcasted.map((f) => [f.method, f.payload.key, f.payload.value, f.payload.seq]),
+    [
+      ['session/projection', 'title', 't2', 6],
+      ['session/projection', 'tokenUsage', { outputTokens: 4 }, 6],
+    ],
+    'a 0.2.2 batched delta fans out into per-key frozen frames sharing the commit seq',
+  )
+  bridge.dispose()
+  release?.()
+})
+
 // ---- 0.2.x opt-in assistant live stream (chunk restoration, dsh-facts §18.13) ----
 
 test('hostSupportsAssistantStream gates on verified lines only', () => {
