@@ -11,6 +11,8 @@ jobs:
     steps:
       - name: checkout
         run: |
+          apt-get update -qq
+          apt-get install -y -qq git >/dev/null
           git clone --depth 1 "https://x-access-token:${{ github.token }}@gitea.ohdsh.com/dev/dsh-api-facade.git" .
       - name: test
         run: |
