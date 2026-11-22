@@ -130,6 +130,12 @@ test('eventPayload maps tool calls and results', () => {
     data: { message: { content: [{ isError: true, content: [{ type: 'text', text: 'boom' }] }] } },
   })
   assert.equal(failed.isError, true)
+  // 0.2.2: structured failure identity { name, code } rides along in the wire form.
+  const coded = eventPayload({
+    type: 'tool/result', seq: 7,
+    data: { error: { name: 'BashError', code: 'NON_ZERO_EXIT', reason: 'exit 1' }, message: { content: [{ isError: true, content: [{ type: 'text', text: 'boom' }] }] } },
+  })
+  assert.deepEqual(coded, { kind: 'tool_result', seq: 7, isError: true, text: 'boom', errorCode: 'NON_ZERO_EXIT', errorName: 'BashError' })
 })
 
 test('eventPayload surfaces turn end reasons with detail', () => {

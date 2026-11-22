@@ -65,6 +65,22 @@ semver-declared:
 > yet verified end-to-end**; the manager matrix marks them `pending` until the
 > pilot and conformance gates pass (ALIGN-26 cards). `0.2.2` additionally
 > requires Node ≥ 24.9, which is a separate image change.
+>
+> **0.2.2 runtime adaptations** (align-06): the facade is a session-projection
+> *consumer*, not a provider — it reads projections through `session/control`
+> (baseline + deltas), `session/follow` (snapshot `projections`), and
+> `SessionStore.list()/get()`, none of which change API shape on 0.2.2, so the
+> 0.2.2 "async session-projection handle" migration (for plugins that *register*
+> projection providers via `SessionStore.registerMessageProjection`) does not
+> apply here. The one consumer-side change the facade does absorb: 0.2.2 turns
+> the `session/control` projection delta from a per-key `{ key, value }` frame
+> into a batched `{ changes: [{ key, val }] }` frame (`SessionProjectionUpdate`),
+> which `ControlBridge` now fans out into the frozen per-key `session/projection`
+> frames (backward compatible with 0.1.x/0.2.0). Tool failures gain an explicit
+> `tool/result.data.error = { name, code, reason? }` identity on 0.2.2; the
+> facade's `eventPayload` now surfaces `errorCode`/`errorName` on the frozen
+> `tool_result` frame. The facade imports neither `dsh-app-boot` nor
+> `dsh-official-bundles`, so the official-bundles relocation does not touch it.
 
 Consumers pin the facade **by commit**
 (`github:litestartup-com/dsh-api-gateway#<sha>`), so each DSH line is

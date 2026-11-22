@@ -233,6 +233,8 @@ export class ControlBridge {
           value?: unknown
           sessionId?: unknown
           key?: unknown
+          val?: unknown
+          changes?: unknown
           seq?: unknown
           [k: string]: unknown
         }
@@ -245,8 +247,21 @@ export class ControlBridge {
           }
           continue
         }
-        if (f.type === 'projection' && typeof f.sessionId === 'string' && typeof f.key === 'string') {
-          this.broadcast(buildProjectionFrame(f.sessionId, f.key, f.value, typeof f.seq === 'number' ? f.seq : 0))
+        if (f.type === 'projection' && typeof f.sessionId === 'string') {
+          const seq = typeof f.seq === 'number' ? f.seq : 0
+          // 0.2.2 起 session/control 的 projection 增量改为批量：一条帧带
+          // `changes: [{ key, val }]`（SessionProjectionUpdate，一次提交可能
+          // 同时改多个投影键）。0.1.x/0.2.0 是逐 key 的 `{ key, value }`。
+          // 两代都译成老逐 key 的 session/projection 帧，manager 零改动。
+          if (Array.isArray(f.changes)) {
+            for (const change of f.changes as Array<{ key?: unknown; val?: unknown } | null | undefined>) {
+              if (change !== null && typeof change === 'object' && typeof change.key === 'string') {
+                this.broadcast(buildProjectionFrame(f.sessionId, change.key, change.val, seq))
+              }
+            }
+          } else if (typeof f.key === 'string') {
+            this.broadcast(buildProjectionFrame(f.sessionId, f.key, f.value, seq))
+          }
         }
       }
     } catch (error) {
